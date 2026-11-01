@@ -1,4 +1,18 @@
-# Bãi xe thông minh — App quản lý đỗ xe (Desktop)
+# Bãi xe thông minh — Hệ quản lý đỗ xe 3 nền tảng
+
+Hệ quản lý đỗ xe gồm 3 nền tảng: **app máy tính (Desktop)** cho quầy bãi xe, **app điện thoại (mobile)** cho khách và nhân viên hiện trường, **app online (web)** để quản lý từ xa.
+
+| Nền tảng | Trạng thái | Phạm vi |
+|---|---|---|
+| 🖥️ Desktop (Electron, Windows) | ✅ Hoàn thành | Check-in/out, tính phí tự động, vé tháng, đặt chỗ, chấm công ca trực, báo cáo và backup. Chạy offline local-first, dữ liệu lưu máy cục bộ. |
+| 📱 Mobile (app điện thoại) | 🔜 Lộ trình — đang phát triển | Khách check-in/out, xem chỗ trống theo thời gian thực, đặt chỗ trước. |
+| 🌐 Web online | 🔜 Lộ trình — đang phát triển | Dashboard và báo cáo từ xa cho chủ bãi xe (doanh thu, công suất, ca trực). |
+
+> **Ghi chú trung thực:** hiện tại chỉ nền tảng **Desktop** đã hoàn thành và dùng được. Mobile và Web online là lộ trình phát triển, chưa có bản chạy được.
+>
+> Phần còn lại của README này mô tả chi tiết nền tảng **Desktop**.
+
+## App desktop (Windows) — đã hoàn thành
 
 App desktop Windows (Electron + SQLite local-first + React) cho quầy bãi xe: check-in/out, tính phí tự động, vé tháng, đặt chỗ, chấm công ca trực, báo cáo và backup.
 Chạy offline hoàn toàn, dữ liệu lưu máy cục bộ, không cần mạng hay server riêng.
