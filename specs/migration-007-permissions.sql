@@ -1,0 +1,99 @@
+-- ============================================================================
+-- Migration 007 — phân quyền chi tiết S4 (SQLite + better-sqlite3)
+-- File: specs/migration-007-permissions.sql
+-- ----------------------------------------------------------------------------
+-- Mục tiêu (staff-area.md S4.1 + HỢP ĐỒNG Leader DB-007):
+--   users thêm 1 cột NULLABLE: permissions TEXT NULL (JSON 5 flags per-user).
+--   NULL = full quyền staff như hiện tại (tương thích ngược, resolve =
+--   STAFF_DEFAULTS, KHÔNG backfill). KHÔNG bảng mới, KHÔNG seed,
+--   KHÔNG sửa bảng khác, KHÔNG index mới (xem lý do ở cuối STEP 1).
+--
+-- CANONICAL 5 KEYS (theo staff-area.md S4.1 — có resolvePerm + whitelist S4.4
+-- + UI section S4.2 + ma trận ví dụ; HỢP ĐỒNG Leader "vd" chỉ là ví dụ):
+--   {"checkin":1,"pass_sale":1,"report_self":1,"profile_self":1,"reservation":1}
+--   * checkin      — check-in/out + thu phí (gồm cả checkout_charge của Leader vd)
+--   * pass_sale    — bán/gia hạn vé tháng (= pass_sell của Leader vd)
+--   * report_self  — báo cáo + hiệu suất ca mình (= report_view của Leader vd,
+--                    nhưng giới hạn scope ca mình, staff KHÔNG xem toàn bộ)
+--   * profile_self — tự sửa SĐT/địa chỉ của mình (S1.4)
+--   * reservation  — xác nhận/hủy đặt chỗ (§13)
+--   Giá trị canonical 0 | 1. App parse CHẤP NHẬN cả boolean true/false
+--   (vd Leader {"checkin":true,...}) → normalize về 0/1 lúc resolve.
+--   Partial JSON thiếu key = default 1 cho key đó. Key lạ ngoài 5 → app bỏ qua.
+--   Set cho role='admin' → backend bỏ qua (admin luôn full, S4.4).
+--
+-- TƯƠNG THÍCH NGƯỢC 3 LỚP (staff-area.md S4.1):
+--   1. DB: cột NULL, staff cũ NULL = full (resolve = STAFF_DEFAULTS).
+--   2. Guard cũ theo role giữ nguyên; permission check CHỈ THÊM ở kênh liên
+--      quan (check-in, pass_sale, activity:list, profile:update…):
+--      role='admin' → pass luôn; staff → check flag, thiếu →
+--      FORBIDDEN('NO_PERMISSION:<key>').
+--   3. Frontend: menu/nav render theo role như cũ + ẩn thêm theo flags
+--      (resolve 1 lần lúc login: me.permissions ?? defaults, cache useAuth).
+--
+-- CÁCH CHẠY (dành cho @node-developer — migration runner):
+--   * DB mới (chưa có bảng users): KHÔNG chạy file này — bootstrap schema.sql
+--     (đã gộp sẵn v007) + seed.sql như cũ.
+--   * DB đã có dữ liệu: backup file parking.db trước (copy ->
+--     parking.db.bak-007), rồi chạy runner JS ở dưới. KHÔNG db.exec() nguyên
+--     file khi chưa strip (lý do: SQLite không có ADD COLUMN IF NOT EXISTS —
+--     chạy lại câu ADD COLUMN của cột đã tồn tại sẽ lỗi duplicate column).
+--
+--   Runner mẫu (copy vào migration runner, tái dùng phong cách DB-005):
+--     const sql = fs.readFileSync('specs/migration-007-permissions.sql', 'utf8');
+--     const cols = new Set(
+--       db.prepare(`SELECT name FROM pragma_table_info('users')`).all().map(r => r.name)
+--     );
+--     // Neo '\n' để chỉ khớp marker dòng riêng (trong header cũng nhắc tên marker).
+--     const strip = (s, b, e) => {
+--       const B = '\n-- <' + b + '>', E = '\n-- <' + e + '>';
+--       const i = s.indexOf(B), j = s.indexOf(E);
+--       return (i < 0 || j < 0) ? s : s.slice(0, i) + s.slice(j + E.length);
+--     };
+--     let run = sql;
+--     if (cols.has('permissions')) run = strip(run, 'STEP1-PERMISSIONS-BEGIN', 'STEP1-PERMISSIONS-END');
+--     db.exec(run);
+--     const bad = db.pragma('foreign_key_check');
+--     if (bad.length > 0) throw new Error('FK violation sau migration 007');
+--
+-- IDEMPOTENT: chạy N lần không lỗi NẾU runner strip block của cột đã tồn tại
+--   (1 cột duy nhất nên 1 block marker; DB đã migrate → strip → file chỉ còn
+--   comment/PRAGMA → exec no-op an toàn).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- STEP 0 — backup (LÀM TAY TRƯỚC KHI CHẠY, không phải câu SQL):
+--   copy parking.db -> parking.db.bak-007
+--   Lý do: dù migration chỉ ADD COLUMN nullable (rủi ro thấp nhất trong các loại
+--   ALTER — không rebuild bảng, không copy dữ liệu) nhưng giữ 1 bản file-level
+--   để rollback 1 lệnh khi có sự cố (giống DB-002/003/004/005/006).
+-- ----------------------------------------------------------------------------
+
+-- <STEP1-PERMISSIONS-BEGIN>
+-- ----------------------------------------------------------------------------
+-- STEP 1 — users.permissions (JSON 5 flags, optional, NULL = full staff cũ).
+-- TEXT NULL thuần, KHÔNG CHECK JSON ở DB (SQLite cũ qua better-sqlite3 không
+-- ép JSON rẻ; app parse + whitelist 5 keys + normalize 0/1|true/false theo
+-- staff-area.md S4.3/S4.4, backend là nơi duy nhất resolvePerm).
+-- KHÔNG index (đọc theo PK users:list/login, filter permission ở app sau
+-- parse; JSON TEXT index không phục vụ query nào ở S4 — tránh over-indexing).
+-- RUNNER BẮT BUỘC strip block này nếu permissions đã tồn tại (xem header).
+-- ----------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN permissions TEXT;
+-- <STEP1-PERMISSIONS-END>
+
+-- ----------------------------------------------------------------------------
+-- KHÔNG index mới: permissions là JSON TEXT đọc theo PK (login/users:list),
+-- không có query pattern WHERE/ORDER BY trên cột này ở S4 (menu ẩn + guard
+-- resolve ở app). Nếu sau này cần lọc "staff mất quyền X" ở admin thì thêm
+-- index sau — hiện tại tránh over-indexing bảng users hot-write.
+-- ----------------------------------------------------------------------------
+
+-- ============================================================================
+-- ROLLBACK (làm tay, theo thứ tự; ưu tiên restore file parking.db.bak-007):
+--   1. ALTER TABLE users DROP COLUMN permissions;  -- cần SQLite >= 3.35
+--      (better-sqlite3 >= 8 đã bundle SQLite mới hơn, đủ điều kiện).
+--   2. PRAGMA foreign_key_check; trống (ADD COLUMN nullable không đụng FK).
+-- Dữ liệu mất: JSON flags đã gán sau migration (staff về lại NULL = full
+--   như trước — đúng tương thích ngược, không mất dữ liệu nghiệp vụ khác).
+-- ============================================================================

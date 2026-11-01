@@ -1,0 +1,20 @@
+﻿# deps & build
+node_modules/
+dist/
+release/
+*.log
+
+# data local (DB + backup + dev logs) — KHONG commit
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.bak-*
+data/
+dev-out.log
+dev-err.log
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.vscode/

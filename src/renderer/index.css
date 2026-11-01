@@ -1,0 +1,384 @@
+/* Design tokens — single source of truth, mirrored from DESIGN.md §2 + §10.
+   No hex colour may appear in component CSS outside this file. */
+
+:root {
+  --color-primary: #1677ff;
+  --color-primary-ring: rgba(22, 119, 255, 0.18);
+  --color-primary-tint: rgba(22, 119, 255, 0.1);
+  --color-secondary: #8b5cf6;
+  --color-secondary-tint: rgba(139, 92, 246, 0.1);
+  --color-success: #16a34a;
+  --color-success-strong: #15803d;
+  --color-success-tint: rgba(22, 163, 74, 0.08);
+  --color-success-border: rgba(22, 163, 74, 0.32);
+  --color-warning: #d97706;
+  --color-warning-strong: #b45309;
+  --color-warning-tint: rgba(217, 119, 6, 0.1);
+  --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
+  --color-danger-tint: rgba(220, 38, 38, 0.08);
+  --color-surface: #ffffff;
+  --color-bg: #f3f5f9;
+  --color-text: #111827;
+  --color-text-60: rgba(17, 24, 39, 0.6);
+  --color-text-40: rgba(17, 24, 39, 0.4);
+  --color-border: rgba(17, 24, 39, 0.12);
+  --color-border-strong: rgba(17, 24, 39, 0.2);
+  --color-overlay: rgba(17, 24, 39, 0.45);
+
+  --font-ui: 'Plus Jakarta Sans', 'Be Vietnam Pro', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Be Vietnam Pro', Consolas, 'Segoe UI', ui-monospace, monospace;
+
+  --scale-12: 12px;
+  --scale-14: 14px;
+  --scale-16: 16px;
+  --scale-20: 20px;
+  --scale-24: 24px;
+  --scale-32: 32px;
+
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --sidebar-w: 240px;
+  --topbar-h: 56px;
+  --content-max: 1200px;
+  --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.06), 0 4px 16px rgba(17, 24, 39, 0.06);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--scale-14);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden; /* spec ui-fixes-001 §C2.1 — page không bao giờ scroll ngang */
+}
+
+.mono { font-family: var(--font-mono); }
+
+/* Focus-visible — DESIGN.md §10.3, never remove */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- primitives ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 40px; padding: 0 16px; border-radius: var(--radius-8);
+  font-family: var(--font-ui); font-size: var(--scale-14); font-weight: 600;
+  border: 1px solid transparent; cursor: pointer;
+  transition: background 150ms ease-out, border-color 150ms ease-out, opacity 150ms ease-out;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary { background: var(--color-primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: #0f63d8; }
+.btn-neutral { background: var(--color-surface); border-color: var(--color-border-strong); color: var(--color-text); }
+.btn-neutral:hover:not(:disabled) { background: var(--color-bg); }
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-ghost { background: transparent; color: var(--color-primary); height: 36px; }
+.btn-block { width: 100%; height: 44px; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: var(--scale-12); }
+
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.field > label { font-size: var(--scale-14); font-weight: 500; }
+.input, .select, .textarea {
+  height: 40px; padding: 0 12px; border-radius: var(--radius-8);
+  border: 1px solid var(--color-border-strong); background: var(--color-surface);
+  font-family: var(--font-ui); font-size: var(--scale-14); color: var(--color-text);
+  width: 100%;
+}
+.textarea { height: auto; min-height: 56px; padding: 8px 12px; resize: vertical; }
+.input:focus, .select:focus, .textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-ring);
+  outline: none;
+}
+.input-mono { font-family: var(--font-mono); text-transform: uppercase; }
+.field-hint { font-size: var(--scale-12); color: var(--color-text-60); }
+.field-error { font-size: var(--scale-12); color: var(--color-danger); }
+
+.card {
+  background: var(--color-surface); border-radius: var(--radius-12);
+  padding: var(--space-16); box-shadow: var(--shadow-card);
+  border: 1px solid var(--color-border);
+}
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--scale-12); font-weight: 600; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
+}
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge-success { color: var(--color-success-strong); background: var(--color-success-tint); border-color: var(--color-success-border); }
+.badge-primary { color: var(--color-primary); background: var(--color-primary-tint); border-color: rgba(22,119,255,0.32); }
+.badge-secondary { color: var(--color-secondary); background: var(--color-secondary-tint); border-color: rgba(139,92,246,0.32); }
+.badge-warning { color: var(--color-warning-strong); background: var(--color-warning-tint); border-color: rgba(217,119,6,0.32); }
+.badge-danger { color: var(--color-danger-strong); background: var(--color-danger-tint); border-color: rgba(220,38,38,0.32); }
+.badge-muted { color: var(--color-text-60); background: var(--color-bg); border-color: var(--color-border); }
+
+.alert {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 12px 14px; border-radius: var(--radius-8); font-size: var(--scale-14);
+}
+.alert-danger { background: var(--color-danger-tint); border: 1px solid rgba(220,38,38,0.32); color: var(--color-danger-strong); }
+.alert-warning { background: var(--color-warning-tint); border: 1px solid rgba(217,119,6,0.32); color: var(--color-warning-strong); }
+.alert-success { background: var(--color-success-tint); border: 1px solid var(--color-success-border); color: var(--color-success-strong); }
+
+/* ---------- app shell ---------- */
+.shell { display: flex; min-height: 100vh; min-width: 1280px; }
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0; background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+}
+.sidebar-logo { display: flex; align-items: center; gap: 8px; padding: 16px; font-size: var(--scale-24); font-weight: 800; color: var(--color-primary); }
+.nav-icon { display: inline-flex; align-items: center; }
+.nav-item svg, .btn svg, .icon-btn svg, .th-sort svg { flex-shrink: 0; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 12px; flex: 1; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: var(--radius-8); font-size: var(--scale-14); font-weight: 500;
+  color: var(--color-text); background: transparent; border: 0; cursor: pointer;
+  text-align: left; width: 100%; font-family: var(--font-ui);
+}
+.nav-item:hover { background: var(--color-bg); }
+.nav-item.active { background: var(--color-primary-tint); color: var(--color-primary); font-weight: 700; }
+.sidebar-role { padding: 12px 16px; border-top: 1px solid var(--color-border); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.topbar {
+  height: var(--topbar-h); background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex; align-items: center; gap: 16px; padding: 0 24px;
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar-title { font-size: var(--scale-20); font-weight: 600; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.content { max-width: var(--content-max); width: 100%; margin: 0 auto; padding: 24px; }
+.page-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.page-head h1 { font-size: var(--scale-24); margin: 0; font-weight: 700; }
+.page-head p { margin: 4px 0 0; font-size: var(--scale-14); color: var(--color-text-60); }
+.page-head .spacer { flex: 1; }
+
+/* ---------- tables ---------- */
+.table-wrap {
+  overflow-x: auto; overflow-y: auto;
+  max-height: calc(100vh - 320px); /* topbar 56 + page-head + toolbar + pager */
+  overscroll-behavior: contain;
+  background: var(--color-surface); border-radius: var(--radius-12); border: 1px solid var(--color-border);
+}
+table.grid { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--scale-14); min-width: 960px; }
+table.grid th {
+  text-align: left; padding: 12px; font-size: var(--scale-12); font-weight: 600;
+  color: var(--color-text-60); text-transform: uppercase; letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--color-border); background: var(--color-surface);
+  position: sticky; top: 0; z-index: 2;
+}
+/* Cột đầu sticky-left khi scroll ngang (spec ui-fixes-001 §C2.2). */
+table.grid th:first-child { left: 0; z-index: 3; }
+table.grid td:first-child {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--color-surface);
+}
+table.grid td { padding: 12px; border-bottom: 1px solid var(--color-border); }
+table.grid tr.row-flash td { background: var(--color-primary-tint); }
+table.grid tr:last-child td { border-bottom: 0; }
+.icon-btn {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-8); border: 1px solid transparent; background: transparent;
+  cursor: pointer; font-size: 15px;
+}
+.icon-btn:hover { background: var(--color-bg); border-color: var(--color-border); }
+
+/* ---------- dialog ---------- */
+.dialog-overlay {
+  position: fixed; inset: 0; background: var(--color-overlay);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.dialog {
+  background: var(--color-surface); border-radius: var(--radius-12);
+  width: 480px; max-width: calc(100vw - 48px); max-height: 90vh;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 24px;
+}
+.dialog-wide { width: 640px; }
+.dialog h2 { margin: 0 0 4px; font-size: var(--scale-20); }
+.dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* ---------- toast ---------- */
+.toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 100; max-width: 360px; }
+.toast { padding: 12px 14px; border-radius: var(--radius-8); font-size: var(--scale-14); box-shadow: var(--shadow-card); background: var(--color-surface); border: 1px solid var(--color-border); }
+
+/* ---------- skeleton / empty ---------- */
+.skeleton {
+  border-radius: var(--radius-8);
+  background: linear-gradient(90deg, var(--color-bg) 25%, #e6eaf1 50%, var(--color-bg) 75%);
+  background-size: 200% 100%; animation: shimmer 1.2s infinite linear;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  * { transition: none !important; }
+}
+.empty { text-align: center; padding: 48px 24px; }
+.empty h3 { font-size: var(--scale-20); margin: 0 0 8px; }
+.empty p { color: var(--color-text-60); margin: 0 0 16px; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
+.kpi-label { font-size: 13px; font-weight: 500; color: var(--color-text-60); margin-bottom: 4px; }
+.kpi-value { font-size: var(--scale-32); font-weight: 700; line-height: 1.1; }
+.kpi-delta { font-size: var(--scale-12); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+
+.two-col { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+/* Dashboard spec §b: zones 2fr left, chart+activity 1fr right. */
+.two-col-flip { grid-template-columns: 2fr 1fr; }
+@media (max-width: 1279px) { .two-col { grid-template-columns: 1fr; } }
+@media (max-width: 1279px) { .two-col-flip { grid-template-columns: 1fr; } }
+
+/* Pagination footer (Zones) + sortable header buttons — tokens only. */
+.pager {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-12); padding: 10px 16px; margin-top: 12px;
+  font-size: var(--scale-14);
+}
+.pager .spacer { flex: 1; }
+.th-sort {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.toolbar .spacer { flex: 1; }
+.search-input { width: 240px; }
+
+.progress { height: 8px; border-radius: 999px; background: var(--color-bg); overflow: hidden; }
+.progress > div { height: 100%; border-radius: 999px; background: var(--color-success); transition: width 200ms ease-out; }
+
+.legend { display: flex; gap: 12px; align-items: center; font-size: var(--scale-12); font-weight: 500; margin-bottom: 12px; flex-wrap: wrap; }
+.legend .swatch { width: 12px; height: 12px; border-radius: 4px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+
+.tabs { display: inline-flex; background: var(--color-bg); border-radius: var(--radius-8); padding: 4px; gap: 4px; margin-bottom: 16px; }
+.tab { border: 0; background: transparent; font-family: var(--font-ui); font-size: var(--scale-16); font-weight: 600; padding: 8px 24px; border-radius: 6px; cursor: pointer; color: var(--color-text-60); }
+.tab[aria-selected="true"] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-card); }
+/* Customer tab row (spec customer-area.md §0.3) dùng aria-current="page" —
+   cùng visual với aria-selected để nhất quán. */
+.tab[aria-current="page"] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-card); }
+
+/* Customer area P1 (spec customer-area.md §P1.1): 2 cards dọc, max 640px. */
+.profile-col { max-width: 640px; display: flex; flex-direction: column; gap: 24px; }
+.profile-col .card h2 { font-weight: 700; }
+
+.receipt { border: 1px dashed var(--color-border-strong); border-radius: var(--radius-12); padding: 16px; background: var(--color-surface); }
+.receipt .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: var(--scale-14); }
+.receipt .total { font-size: var(--scale-24); font-weight: 700; font-family: var(--font-mono); }
+
+.slot-grid { display: grid; grid-template-columns: repeat(auto-fill, 56px); gap: 8px; }
+.slot {
+  width: 56px; height: 40px; border-radius: 8px; font-family: var(--font-mono); font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid; transition: opacity 200ms ease-out;
+}
+.slot-free { color: var(--color-success-strong); background: var(--color-success-tint); border-color: var(--color-success-border); }
+.slot-occupied { color: #fff; background: var(--color-primary); border-color: var(--color-primary); }
+/* FE-016 P4: ô đang giữ chỗ — Warning (token), tách hẳn maintenance. */
+.slot-reserved { color: var(--color-warning-strong); background: var(--color-warning-tint); border-color: var(--color-warning); }
+.slot-maintenance {
+  color: var(--color-text-40); background: repeating-linear-gradient(45deg, var(--color-surface), var(--color-surface) 4px, var(--color-bg) 4px, var(--color-bg) 8px);
+  border-color: var(--color-border-strong);
+}
+.zone-chips { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--color-border-strong); background: var(--color-surface); border-radius: 999px; padding: 6px 14px; font-size: var(--scale-14); font-weight: 500; cursor: pointer; font-family: var(--font-ui); }
+.chip[aria-pressed="true"] { background: var(--color-primary); border-color: var(--color-primary); color: #fff; font-weight: 700; }
+
+.login-wrap { display: flex; min-height: 100vh; min-width: 1280px; }
+.login-brand { width: 480px; background: var(--color-primary); color: #fff; padding: 48px; display: flex; flex-direction: column; justify-content: center; }
+/* Trang guest chromeless — cùng luật collapse với .shell (spec ui-fixes-001 §C2.1). */
+.guest-root { min-height: 100vh; }
+.guest-logo { display: inline-flex; align-items: center; gap: 8px; font-size: var(--scale-20); font-weight: 800; color: var(--color-primary); }
+.caps-hint { display: inline-flex; align-items: center; gap: 6px; color: var(--color-warning-strong); }
+.login-brand h1 { font-size: var(--scale-32); margin: 0 0 16px; }
+.login-form-col { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--color-bg); }
+.login-card { width: 400px; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.drawer { position: fixed; right: 0; top: 0; bottom: 0; width: 360px; background: var(--color-surface); border-left: 1px solid var(--color-border); padding: 24px; z-index: 40; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+/* FE-017 S1b: drawer "Hồ sơ nhân viên" 400px phải (spec staff-area.md). */
+.drawer-400 { width: 400px; }
+.seg { display: flex; gap: 4px; background: var(--color-bg); border-radius: var(--radius-8); padding: 4px; }
+.seg button { flex: 1; border: 0; background: transparent; border-radius: 6px; padding: 8px; font-family: var(--font-ui); font-size: var(--scale-14); font-weight: 600; cursor: pointer; color: var(--color-text-60); }
+.seg button[aria-pressed="true"] { background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-card); }
+.bar-chart { display: flex; align-items: flex-end; gap: 6px; height: 240px; padding-top: 16px; }
+.bar-chart .bar { flex: 1; border-radius: 6px 6px 0 0; min-height: 4px; }
+
+/* FE-020 S4: permission switch rows (native <button role="switch">). */
+.perm-row { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-8); background: var(--color-surface); }
+.switch { position: relative; flex-shrink: 0; width: 44px; height: 24px; border: 0; border-radius: 999px; background: var(--color-border-strong); cursor: pointer; padding: 0; transition: background 0.15s ease; }
+.switch .switch-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--color-surface); box-shadow: var(--shadow-card); transition: left 0.15s ease; }
+.switch.on { background: var(--color-success); }
+.switch.on .switch-knob { left: 22px; }
+.switch:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .switch, .switch .switch-knob { transition: none; } }
+
+/* ---------- scroll system (spec ui-fixes-001 §C2) ---------- */
+/* Một vùng scroll duy nhất tại một thời điểm: table-wrap chịu scroll thay vì page;
+   dialog/drawer scroll trong panel + khóa scroll nền (scroll-lock trong ui.tsx / PassesPage). */
+
+/* Styled scrollbar theo tokens — chỉ dùng token border/text, không màu mới. */
+.table-wrap, .dialog, .drawer, .content {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+.table-wrap::-webkit-scrollbar,
+.dialog::-webkit-scrollbar,
+.drawer::-webkit-scrollbar,
+.content::-webkit-scrollbar { width: 10px; height: 8px; }
+.table-wrap::-webkit-scrollbar-track,
+.dialog::-webkit-scrollbar-track,
+.drawer::-webkit-scrollbar-track,
+.content::-webkit-scrollbar-track { background: transparent; }
+.table-wrap::-webkit-scrollbar-thumb,
+.dialog::-webkit-scrollbar-thumb,
+.drawer::-webkit-scrollbar-thumb,
+.content::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover,
+.dialog::-webkit-scrollbar-thumb:hover,
+.drawer::-webkit-scrollbar-thumb:hover,
+.content::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-40);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Fallback < 1280px: bỏ min-width desktop-first, sidebar collapse 64px
+   (icon-only) thay vì ép page scroll ngang (spec ui-fixes-001 §C2.1). */
+@media (max-width: 1279px) {
+  .shell, .login-wrap { min-width: 0; }
+  .sidebar { width: 64px; }
+  .sidebar-logo { justify-content: center; padding: 16px 8px; font-size: 0; }
+  .sidebar-logo svg { flex-shrink: 0; }
+  .nav-item { justify-content: center; padding: 10px 8px; }
+  .nav-item .nav-label { display: none; }
+  .sidebar-role { display: none; }
+  .login-brand { display: none; }
+  .content { padding: 16px; }
+}

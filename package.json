@@ -1,0 +1,87 @@
+{
+  "name": "parking-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "author": "Bãi xe thông minh",
+  "description": "Parking Management — Electron + better-sqlite3 (local-first)",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.json && electron .",
+    "dev:renderer": "vite",
+    "build": "tsc -p tsconfig.json",
+    "build:renderer": "vite build",
+    "build:all": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify:fee": "vitest run src/main/fee-calculator.spec.ts",
+    "dist": "npm run build:all && electron-builder --win dir --publish never",
+    "dist:win": "npm run build:all && electron-builder --win nsis --publish never"
+  },
+  "build": {
+    "appId": "vn.baixe.parking",
+    "productName": "Bãi xe thông minh",
+    "artifactName": "BaiXeThongMinh-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.spec.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "specs",
+        "to": "specs",
+        "filter": [
+          "*.sql"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bãi xe thông minh",
+      "deleteAppDataOnUninstall": false,
+      "packElevateHelper": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    }
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.10.0",
+    "lucide-react": "1.58.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "electron": "^33.4.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.5"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true,
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.21.5": true
+  }
+}

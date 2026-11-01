@@ -1,0 +1,101 @@
+-- ============================================================================
+-- Migration 005 — hồ sơ chi tiết nhân viên S1 (SQLite + better-sqlite3)
+-- File: specs/migration-005-staff-profile.sql
+-- ----------------------------------------------------------------------------
+-- Mục tiêu (staff-area.md S1.1 + HỢP ĐỒNG Leader DB-005):
+--   users thêm 3 cột NULLABLE: address TEXT NULL, start_date TEXT NULL
+--   (YYYY-MM-DD), notes TEXT NULL. `phone` ĐÃ CÓ từ migration-002 — không đụng.
+--   Nullable = tương thích ngược hoàn toàn, staff cũ không cần backfill.
+--   KHÔNG bảng mới, KHÔNG seed, KHÔNG sửa bảng khác, KHÔNG index mới
+--   (xem lý do ở cuối STEP 1).
+--
+-- CÁCH CHẠY (dành cho @node-developer — migration runner):
+--   * DB mới (chưa có bảng users): KHÔNG chạy file này — bootstrap schema.sql
+--     (đã gộp sẵn v005) + seed.sql như cũ.
+--   * DB đã có dữ liệu: backup file parking.db trước (copy ->
+--     parking.db.bak-005), rồi chạy runner JS ở dưới. KHÔNG db.exec() nguyên
+--     file khi chưa strip (lý do: SQLite không có ADD COLUMN IF NOT EXISTS —
+--     chạy lại câu ADD COLUMN của cột đã tồn tại sẽ lỗi duplicate column).
+--
+--   Runner mẫu (copy vào migration runner, tái dùng phong cách DB-002):
+--     const sql = fs.readFileSync('specs/migration-005-staff-profile.sql', 'utf8');
+--     const cols = new Set(
+--       db.prepare(`SELECT name FROM pragma_table_info('users')`).all().map(r => r.name)
+--     );
+--     // Neo '\n' để chỉ khớp marker dòng riêng (trong header cũng nhắc tên marker).
+--     const strip = (s, b, e) => {
+--       const B = '\n-- <' + b + '>', E = '\n-- <' + e + '>';
+--       const i = s.indexOf(B), j = s.indexOf(E);
+--       return (i < 0 || j < 0) ? s : s.slice(0, i) + s.slice(j + E.length);
+--     };
+--     let run = sql;
+--     if (cols.has('address'))    run = strip(run, 'STEP1-ADDRESS-BEGIN', 'STEP1-ADDRESS-END');
+--     if (cols.has('start_date')) run = strip(run, 'STEP1-STARTDATE-BEGIN', 'STEP1-STARTDATE-END');
+--     if (cols.has('notes'))      run = strip(run, 'STEP1-NOTES-BEGIN', 'STEP1-NOTES-END');
+--     db.exec(run);
+--     const bad = db.pragma('foreign_key_check');
+--     if (bad.length > 0) throw new Error('FK violation sau migration 005');
+--
+-- IDEMPOTENT: chạy N lần không lỗi NẾU runner strip block của cột đã tồn tại
+--   (mỗi cột 1 block marker riêng nên DB migrate dở — có cột này thiếu cột kia —
+--   vẫn chạy tiếp đúng phần còn thiếu).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- STEP 0 — backup (LÀM TAY TRƯỚC KHI CHẠY, không phải câu SQL):
+--   copy parking.db -> parking.db.bak-005
+--   Lý do: dù migration chỉ ADD COLUMN nullable (rủi ro thấp nhất trong các loại
+--   ALTER — không rebuild bảng, không copy dữ liệu) nhưng giữ 1 bản file-level
+--   để rollback 1 lệnh khi có sự cố (giống DB-002/003/004).
+-- ----------------------------------------------------------------------------
+
+-- <STEP1-ADDRESS-BEGIN>
+-- ----------------------------------------------------------------------------
+-- STEP 1a — users.address (địa chỉ, optional, max 255 ở tầng app).
+-- TEXT NULL thuần, KHÔNG CHECK length ở DB (giữ nhất quán với phone/notes và
+-- các TEXT tự do khác; app trim + validate max 255 theo staff-area.md S1.5).
+-- RUNNER BẮT BUỘC strip block này nếu address đã tồn tại (xem header).
+-- ----------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN address TEXT;
+-- <STEP1-ADDRESS-END>
+
+-- <STEP1-STARTDATE-BEGIN>
+-- ----------------------------------------------------------------------------
+-- STEP 1b — users.start_date (ngày vào làm, optional, 'YYYY-MM-DD').
+-- TEXT NULL thuần, KHÔNG CHECK format/future ở DB (SQLite so sánh chuỗi ngày
+-- chỉ đúng khi zero-padded; app validate YYYY-MM-DD + <= today theo S1.5,
+-- backend là nơi duy nhất diễn giải thâm niên "X năm Y tháng").
+-- RUNNER BẮT BUỘC strip block này nếu start_date đã tồn tại (xem header).
+-- ----------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN start_date TEXT;
+-- <STEP1-STARTDATE-END>
+
+-- <STEP1-NOTES-BEGIN>
+-- ----------------------------------------------------------------------------
+-- STEP 1c — users.notes (ghi chú nội bộ, optional, max 500 ở tầng app).
+-- TEXT NULL thuần, KHÔNG index (free-text, không có query pattern WHERE/LIKE
+-- ở S1 — drawer đọc theo PK; tránh over-indexing bảng users hot-write).
+-- Admin-only tuyệt đối ở tầng app: SELECT loại khỏi DTO khi role='staff',
+-- users:profile:update không nhận field này (staff-area.md S1.4).
+-- RUNNER BẮT BUỘC strip block này nếu notes đã tồn tại (xem header).
+-- ----------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN notes TEXT;
+-- <STEP1-NOTES-END>
+
+-- ----------------------------------------------------------------------------
+-- KHÔNG index mới: address/notes là free-text không filter; start_date chỉ
+-- hiển thị + tính thâm niên client-side (đọc theo PK users:list), cardinality
+-- thấp — index không phục vụ query nào ở S1/S2 (S2 aggregate từ activity:list).
+-- Nếu S3+ cần filter theo start_date (vd báo cáo thâm niên) thì thêm index sau.
+-- ----------------------------------------------------------------------------
+
+-- ============================================================================
+-- ROLLBACK (làm tay, theo thứ tự; ưu tiên restore file parking.db.bak-005):
+--   1. ALTER TABLE users DROP COLUMN address;
+--      ALTER TABLE users DROP COLUMN start_date;
+--      ALTER TABLE users DROP COLUMN notes;  -- cần SQLite >= 3.35
+--      (better-sqlite3 >= 8 đã bundle SQLite mới hơn, đủ điều kiện).
+--   2. PRAGMA foreign_key_check; trống (ADD COLUMN nullable không đụng FK).
+-- Dữ liệu mất: địa chỉ / ngày vào làm / ghi chú đã nhập sau migration
+--   (user gốc + phone giữ nguyên — cột cũ không bị đụng).
+-- ============================================================================
