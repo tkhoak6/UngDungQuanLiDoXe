@@ -1,16 +1,18 @@
-# Bãi xe thông minh — Hệ quản lý đỗ xe 3 nền tảng
+# Bãi xe thông minh — Hệ quản lý đỗ xe client-server
 
-Hệ quản lý đỗ xe gồm 3 nền tảng: **app máy tính (Desktop)** cho quầy bãi xe, **app điện thoại (mobile)** cho khách và nhân viên hiện trường, **app online (web)** để quản lý từ xa.
+Hệ quản lý đỗ xe theo kiến trúc **client-server**: **client** gồm **app máy tính (Desktop)** tại quầy bãi xe và **app điện thoại (Mobile)** cho khách/nhân viên hiện trường, cùng kết nối về **server online trung tâm** (API + DB tập trung, đồng bộ 2 chiều). Offline vẫn chạy bình thường, có mạng thì đồng bộ lên server.
 
-| Nền tảng | Trạng thái | Phạm vi |
+| Nền tảng | Vai trò | Trạng thái |
 |---|---|---|
-| 🖥️ Desktop (Electron, Windows) | ✅ Hoàn thành | Check-in/out, tính phí tự động, vé tháng, đặt chỗ, chấm công ca trực, báo cáo và backup. Chạy offline local-first, dữ liệu lưu máy cục bộ. |
-| 📱 Mobile (app điện thoại) | 🔜 Lộ trình — đang phát triển | Khách check-in/out, xem chỗ trống theo thời gian thực, đặt chỗ trước. |
-| 🌐 Web online | 🔜 Lộ trình — đang phát triển | Dashboard và báo cáo từ xa cho chủ bãi xe (doanh thu, công suất, ca trực). |
+| 🖥️ Desktop (Electron, Windows) | **Client** tại quầy | ✅ Hoàn thành — đang chạy local-first (SQLite máy cục bộ); lộ trình nối lên server online để đồng bộ. |
+| 📱 Mobile (app điện thoại) | **Client** di động | 🔜 Lộ trình — khách check-in/out, xem chỗ trống thời gian thực, đặt chỗ trước; dùng chung contract `api-contract.md` với server. |
+| ☁️ Server online | **Server trung tâm** | 🔜 Lộ trình — API trung tâm + DB tập trung, đồng bộ 2 chiều với các client (offline vẫn chạy, có mạng đồng bộ sau). |
 
-> **Ghi chú trung thực:** hiện tại chỉ nền tảng **Desktop** đã hoàn thành và dùng được. Mobile và Web online là lộ trình phát triển, chưa có bản chạy được.
+> **Ghi chú trung thực:** hiện tại chỉ **Desktop client** đã hoàn thành và dùng được (local-first). Mobile và Server online là lộ trình, chưa có bản chạy được.
 >
-> Phần còn lại của README này mô tả chi tiết nền tảng **Desktop**.
+> Phần còn lại của README này mô tả chi tiết **Desktop client**.
+>
+> **Lộ trình kỹ thuật:** (1) Giữ SQLite local trên Desktop làm cache/offline store, thêm lớp sync đẩy/kéo về server khi có mạng. (2) Server online giữ DB tập trung làm nguồn chân lý (source of truth), xung đột giải quyết theo timestamp + quy tắc nghiệp vụ. (3) Mobile dùng chung contract `api-contract.md`, không truy cập DB trực tiếp. (4) Desktop hiện tại không cần sửa logic nghiệp vụ khi nối server — chỉ thêm adapter đồng bộ.
 
 ## App desktop (Windows) — đã hoàn thành
 
