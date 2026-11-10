@@ -1,4 +1,4 @@
-package com.example.parking_mobile
+package vn.baixe.parkingmobile
 
 import io.flutter.embedding.android.FlutterActivity
 
