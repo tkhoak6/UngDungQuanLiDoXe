@@ -121,7 +121,7 @@ WHERE v.license_plate = ? AND ps.status = 'parked' LIMIT 1
         }
         resolvedSpot = free.first['id'] as int;
       }
-      var vehicleRows = await txn.query('vehicles',
+      final vehicleRows = await txn.query('vehicles',
           where: 'license_plate = ?', whereArgs: [clean], limit: 1);
       int vehicleId;
       if (vehicleRows.isEmpty) {

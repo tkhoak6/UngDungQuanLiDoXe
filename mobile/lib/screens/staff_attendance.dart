@@ -168,6 +168,8 @@ class _AttendanceScreenState
                           loading: _busy,
                           minHeight: 52,
                           onPressed: () async {
+                            final messenger =
+                                ScaffoldMessenger.of(context);
                             setState(() {
                               _busy = true;
                               _err = null;
@@ -184,8 +186,7 @@ class _AttendanceScreenState
                               if (mounted) {
                                 setState(
                                     () => _reload++);
-                                ScaffoldMessenger.of(
-                                        context)
+                                messenger
                                     .showSnackBar(
                                   const SnackBar(
                                       content: Text(

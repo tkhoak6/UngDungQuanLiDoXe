@@ -129,7 +129,7 @@ class LoadingList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      busy: true,
+      liveRegion: true,
       label: 'Đang tải',
       child: Column(
         children: List.generate(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -54,10 +56,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (userErr != null || passErr != null) return;
     setState(() => _loading = true);
     try {
-      final user = await ref
-          .read(authRepoProvider)
+      final res = await ref
+          .read(hybridAuthRepoProvider)
           .login(_user.text, _pass.text);
-      ref.read(sessionProvider.notifier).state = user;
+      ref.read(authSourceProvider.notifier).state = res.source;
+      ref.read(sessionProvider.notifier).state = res.user;
     } on AuthException catch (e) {
       setState(() => _banner = _friendly(e));
     } finally {
@@ -75,7 +78,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Đăng nhập', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Đăng nhập', style: AppText.appBar),
+        actions: [
+          IconButton(
+            tooltip: 'Máy chủ',
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.dns_outlined),
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(AppGaps.s16),
         child: Column(
@@ -182,12 +194,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     }
     setState(() => _loading = true);
     try {
-      final user = await ref.read(authRepoProvider).registerCustomer(
-            phone: _phone.text,
-            password: _pass.text,
-            fullName: _name.text,
-          );
-      ref.read(sessionProvider.notifier).state = user;
+      final res =
+          await ref.read(hybridAuthRepoProvider).registerCustomer(
+                phone: _phone.text,
+                password: _pass.text,
+                fullName: _name.text,
+              );
+      ref.read(authSourceProvider.notifier).state = res.source;
+      ref.read(sessionProvider.notifier).state = res.user;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Đăng ký thành công.')),
@@ -284,7 +298,16 @@ class AdminBlockScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Parking Mobile')),
+      appBar: AppBar(
+        title: const Text('Parking Mobile'),
+        actions: [
+          IconButton(
+            tooltip: 'Máy chủ',
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.dns_outlined),
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(AppGaps.s24),
         child: Column(
@@ -311,6 +334,9 @@ class AdminBlockScreen extends ConsumerWidget {
               label: 'Đăng xuất',
               danger: true,
               onPressed: () {
+                unawaited(
+                    ref.read(hybridAuthRepoProvider).logoutRemote());
+                ref.read(authSourceProvider.notifier).state = null;
                 ref.read(sessionProvider.notifier).state = null;
               },
             ),

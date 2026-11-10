@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -6,6 +8,7 @@ import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
 import '../repos/auth_repo.dart';
+import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
@@ -43,10 +46,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
     if (_name.text.isEmpty && !_dirty) _name.text = me.fullName;
     final highContrast = ref.watch(highContrastProvider);
+    final source = ref.watch(authSourceProvider);
 
     return Scaffold(
-      appBar:
-          AppBar(title: const Text('Cá nhân', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Cá nhân', style: AppText.appBar),
+        actions: [
+          IconButton(
+            tooltip: 'Máy chủ',
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.dns_outlined),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [
@@ -127,6 +139,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             Text(_msg!, style: AppText.body),
           ],
           const SizedBox(height: AppGaps.s24),
+          Row(
+            children: [
+              const Text('Chế độ: ', style: AppText.helper),
+              source == AuthSource.local
+                  ? AppBadge.warning('Ngoại tuyến (local)')
+                  : AppBadge.success('Online (PocketBase)'),
+            ],
+          ),
+          const SizedBox(height: AppGaps.s8),
           SwitchListTile(
             title: const Text('Tương phản cao'),
             value: highContrast,
@@ -138,6 +159,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             label: 'Đăng xuất',
             danger: true,
             onPressed: () {
+              unawaited(
+                  ref.read(hybridAuthRepoProvider).logoutRemote());
+              ref.read(authSourceProvider.notifier).state = null;
               ref.read(sessionProvider.notifier).state = null;
               context.go('/map');
             },
@@ -217,9 +241,19 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
     final canReport =
         resolvePerm(roleName: me.roleName, perms: me.permissions, key: 'report_self') ==
             1;
+    final source = ref.watch(authSourceProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Tôi', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Tôi', style: AppText.appBar),
+        actions: [
+          IconButton(
+            tooltip: 'Máy chủ',
+            onPressed: () => context.push('/settings'),
+            icon: const Icon(Icons.dns_outlined),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [
@@ -228,6 +262,9 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
               title: Text(me.fullName, style: AppText.cardTitle),
               subtitle: Text(
                   '${me.roleName} · ${me.phone ?? me.username}'),
+              trailing: source == AuthSource.local
+                  ? AppBadge.warning('Local')
+                  : AppBadge.success('Online'),
             ),
           ),
           const SizedBox(height: AppGaps.s16),
@@ -287,6 +324,9 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
             label: 'Đăng xuất',
             danger: true,
             onPressed: () {
+              unawaited(
+                  ref.read(hybridAuthRepoProvider).logoutRemote());
+              ref.read(authSourceProvider.notifier).state = null;
               ref.read(sessionProvider.notifier).state = null;
               context.go('/map');
             },

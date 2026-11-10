@@ -578,3 +578,83 @@ DB packaged app nằm ở `<userData>/parking.db`.
   pre-restore tồn tại + mọi IPC sau đó yêu cầu restart.
 - **Status: verified** (logic + types + IPC runtime đều chạy thật; chỉ chưa
   test GUI click-through).
+
+## BE-016 — PocketBase online client, auth trước (P2 sync data sau)
+
+- **Dep**: `pocketbase@^0.28.2` (JS SDK). Main-process là CommonJS trên
+  Node 20 → dùng bundle CJS (`require('pocketbase/cjs')`, không require root
+  ESM `.mjs`); types vẫn lấy từ package root (type-only import, xóa lúc
+  compile). `npm install --ignore-scripts` (không rebuild better-sqlite3).
+- `src/main/pb-client.ts` (mới): singleton `getPbClient(db)` theo URL trong
+  app-config (đổi URL → tạo lại client + clear auth cũ; `autoCancellation(false)`);
+  `pbGetStatus`/`pbTestConnection` ping `GET {base}/api/health` (timeout 6s,
+  AbortController); `pbLogin` (`authWithPassword` username — staff username /
+  SĐT customer, timeout 8s); `pbRegisterCustomer` (create role server-fix
+  `'customer'`, `passwordConfirm` = password); `pbEnsureAuth` (authRefresh cho
+  P2 data-sync, V1 chưa có IPC gọi); `pbClearAuth` (logout). Phân loại lỗi
+  bằng duck-type `status` số (không import class SDK): null = offline/timeout,
+  400/401/403/404 = server từ chối, 401-refresh = hết phiên. Raw SDK error
+  không bao giờ lọt ra IPC (bọc thành code nội bộ / `PbNoFallbackError`).
+  `PbNoFallbackError` = message Việt user-safe + caller KHÔNG fallback.
+- `src/main/app-config.ts`: `DEFAULT_PB_URL = 'https://mqaue7.bot-keep.xyz'`,
+  `ParkingSettings.pb_url: string | null` (file cũ thiếu key → default URL;
+  admin lưu null/rỗng → local-only, bỏ qua mọi thử online); validate
+  `app-config:set {pb_url}` (http(s) + host có dấu chấm, ≤500 ký tự, strip
+  trailing slash; lỗi Việt field-level như M2); `getPbBaseUrl(db)` tri-state
+  (URL | null local-only).
+- `src/main/auth.ts`: `loginOnlineFirst` (**thứ tự bắt buộc**: PB trước →
+  mirror local → rớt mạng/timeout/sai-pass-PB/chưa-import/5xx thì fallback
+  `login()` local cũ; `PbNoFallbackError` — bị khóa/sai role — thì KHÔNG
+  fallback). `upsertLocalMirrorFromPb` (1 transaction: resolve role_id bằng
+  name, bcrypt lại đúng password vừa nhập nên offline sau đó login được,
+  permissions object → stringify; user PB mới → INSERT đủ cột address/
+  start_date/permissions). `registerCustomerOnlineFirst`: **local trước**
+  (validate + chống trùng + không orphan user PB), rồi best-effort
+  `pbRegisterCustomer` → `{user, pbSynced}` (PB fail → vẫn DTO local +
+  `pbSynced:false`, offline dùng được). `logout()` thêm `pbClearAuth`
+  best-effort. `registerCustomer`/`login` cũ giữ nguyên chữ ký.
+- `src/main/ipc-handlers.ts`: `auth:login` → `loginOnlineFirst` (async);
+  `auth:register` → local + mirror PB, message báo đã/không đồng bộ online;
+  mới `pb:test {url?} → PbTestResult` (**admin**, test tạm không lưu — lưu URL
+  qua `app-config:set {pb_url}`) và `pb:status void → PbStatus`
+  (`{online, mode:'local-first', pb_url, latency_ms}`, guard `none` để render
+  badge offline). `register()` map thêm `PbNoFallbackError → fail(message)`.
+  Envelope `ok/fail` giữ nguyên.
+- `src/shared/types.ts`: `PbMode/PbStatus/PbTestInput/PbTestResult`,
+  `ParkingSettings.pb_url`, `AppConfigSetInput` + `'pb_url'`, 2 entry `ApiMap`.
+  Renderer (`src/renderer/types.ts`) KHÔNG đụng (scope) — FE mirror khi cần.
+- GHI CHÚ cho @frontend: `pb:status` để render badge online/offline;
+  `app-config:set {pb_url}` đã admin-only sẵn; login/register giữ nguyên
+  signature `ApiMap` (chỉ thêm message thành công ở register); sau khi user
+  import + reset password trên PB thì login lần đầu online sẽ tự mirror local.
+- **Rủi ro bảo mật (security gate — auth/external)**: `users.createRule = ""`
+  (public signup) cho phép client tự gán `role` — app luôn gửi `'customer'`
+  nhưng attacker có thể gọi API trực tiếp để tự nâng `admin` cho đến khi hook
+  P2 ép role (`pb_hooks`, xem pocketbase-guide §8). Đây là blocker P2, V1 chấp
+  nhận vì server chưa import user prod. Không log/không trả raw error, không
+  lưu token ra file (authStore in-memory, restart app = login lại như session
+  hiện tại).
+- Out-of-scope giữ đúng: KHÔNG sync data (zones/spots/...), KHÔNG xóa local,
+  KHÔNG restart app, KHÔNG đụng renderer/schema SQLite.
+
+### Verification (BE-016)
+
+- `npx tsc --noEmit` → **pass**. `npm run build` → **pass**.
+  `vitest fee-calculator` → **10/10 pass** (không đụng).
+- Không `console.log`; envelope `ok/fail` giữ nguyên; raw SDK error không lọt
+  ra IPC (assert bằng đọc code + smoke).
+- Smoke runtime **pass** (script ngoài repo, system node + Electron node như
+  BE-014, server live `https://mqaue7.bot-keep.xyz` ping thật):
+  `pbGetStatus` → `{online:true, mode:'local-first', latency_ms:1810}`;
+  `pbTestConnection('not-a-url')` → `PbNoFallbackError` Việt
+  ("phải bắt đầu bằng http(s)://"); `pb_url:null` → baseUrl null + status
+  `{online:false, pb_url:''}`; login PB-disabled → `PB_DISABLED` (caller
+  fallback); live login sai user → `PB_AUTH_FALLBACK:400` (không lộ raw);
+  Electron node + DB tạm + PB unreachable → login đúng pass fallback local
+  OK (`admin/admin`), sai pass → `"Sai tài khoản hoặc mật khẩu"`, register →
+  `0901234567/customer/pbSynced=false`, mirror login offline OK.
+- Chưa chạy: login PB **thành công** thật (cần server đã import users +
+  password đã reset — **PENDING user import**, ghi rõ trong hợp đồng).
+- **Status: verified** cho mọi nhánh không cần user PB thật (logic + types +
+  IPC wiring + fallback offline + validation đều chạy thật; chỉ chưa test
+  GUI click-through và nhánh PB-auth-success live).

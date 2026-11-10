@@ -143,7 +143,8 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
                 builder: (context, zSnap) {
                   final zones = zSnap.data ?? [];
                   return DropdownButtonFormField<int>(
-                    value: _zoneId,
+                    key: ValueKey(_zoneId),
+                    initialValue: _zoneId,
                     decoration: const InputDecoration(
                         labelText: 'Khu'),
                     items: zones
@@ -160,15 +161,21 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
               ),
               const SizedBox(height: AppGaps.s12),
               const Text('Gói', style: AppText.body),
-              ...[1, 3, 6, 12].map((m) => RadioListTile<int>(
-                    value: m,
-                    groupValue: _months,
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(
-                        '$m tháng${m == 12 ? ' · -10%' : ''}'),
-                    onChanged: (v) =>
-                        setState(() => _months = v!),
-                  )),
+              RadioGroup<int>(
+                groupValue: _months,
+                onChanged: (v) =>
+                    setState(() => _months = v ?? _months),
+                child: Column(
+                  children: [1, 3, 6, 12]
+                      .map((m) => RadioListTile<int>(
+                            value: m,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                                '$m tháng${m == 12 ? ' · -10%' : ''}'),
+                          ))
+                      .toList(),
+                ),
+              ),
               if (_err != null)
                 Text(_err!,
                     style: AppText.helper.copyWith(

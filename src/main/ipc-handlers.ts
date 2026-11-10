@@ -10,7 +10,8 @@ import type { AppDb } from './db';
 import { sweepExpiredReservations } from './db';
 import { loadParkingSettings, saveParkingSettings, type ConfigPatch } from './app-config';
 import { checkpointWithRetry, dbFilePath, stampLong, stampShort, validateRestoreFile } from './backup-restore';
-import { AppError, getCurrentUser, hashPassword, login, logout, refreshCurrentUser, registerCustomer, requireCustomer, requirePerm, requireRole, resolvePerms, toUserDTO } from './auth';
+import { AppError, getCurrentUser, hashPassword, loginOnlineFirst, logout, refreshCurrentUser, registerCustomerOnlineFirst, requireCustomer, requirePerm, requireRole, resolvePerms, toUserDTO } from './auth';
+import { pbGetStatus, PbNoFallbackError, pbTestConnection } from './pb-client';
 import { calculateFee, calculatePassPrice } from './fee-calculator';
 import {
   fail,
@@ -279,6 +280,7 @@ function register<K extends IpcChannel>(
     } catch (e) {
       if (e instanceof ValidationError) return fail(e.message, e.errors);
       if (e instanceof AppError) return fail(e.message);
+      if (e instanceof PbNoFallbackError) return fail(e.message);
       return fail('Đã xảy ra lỗi — vui lòng thử lại');
     }
   });
@@ -288,8 +290,8 @@ function register<K extends IpcChannel>(
 let restartRequired = false;
 
 export function registerIpcHandlers(db: AppDb): void {
-  // ---- auth ----
-  register(db, 'auth:login', 'none', (_db, input) => ok(login(_db, input.username, input.password)));
+  // ---- auth (BE-016 online-first: thử PB trước, rớt mạng/lỗi → fallback local) ----
+  register(db, 'auth:login', 'none', async (_db, input) => ok(await loginOnlineFirst(_db, input.username, input.password)));
   register(db, 'auth:logout', 'none', () => {
     logout();
     return ok(null);
@@ -297,7 +299,25 @@ export function registerIpcHandlers(db: AppDb): void {
   register(db, 'auth:me', 'none', () => ok(getCurrentUser()));
   // Public: khách tự đăng ký bằng SĐT (api-contract.md §12). Role server-fix
   // 'customer', không auto-login — frontend gọi auth:login sau khi đăng ký.
-  register(db, 'auth:register', 'none', (d, input) => ok(registerCustomer(d, input)));
+  // BE-016: local trước + best-effort mirror PB (offline vẫn dùng được).
+  register(db, 'auth:register', 'none', async (d, input) => {
+    const reg = await registerCustomerOnlineFirst(d, input);
+    return ok(
+      reg.user,
+      reg.pbSynced
+        ? 'Đã tạo tài khoản (đã đồng bộ online).'
+        : 'Đã tạo tài khoản trên máy này — chưa đồng bộ online (kiểm tra mạng rồi đăng nhập lại).',
+    );
+  });
+
+  // ---- PocketBase online (BE-016: auth trước, data sync để P2) ----
+  register(db, 'pb:test', 'admin', async (d, input) => {
+    const r = await pbTestConnection(d, input?.url);
+    return r.reachable
+      ? ok(r, `Kết nối máy chủ online OK (${r.latency_ms ?? '?'}ms).`)
+      : ok(r, 'Không kết nối được máy chủ online — kiểm tra địa chỉ/mạng.');
+  });
+  register(db, 'pb:status', 'none', async (d) => ok(await pbGetStatus(d)));
 
   // ---- zones ----
   register(db, 'zones:list', 'none', (d) =>

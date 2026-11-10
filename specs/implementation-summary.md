@@ -584,3 +584,40 @@ Deviations (cho @designer QA): (1) Excel 1 sheet (summary title + detail rows) t
 - Restore confirm ghi de ro rang: checkbox bat buoc + type-to-confirm khop case-sensitive + block khi con xe do + overlay khong-Esc + loi tieng Viet theo ma BE-015.
 - Khong restart app (Leader restart).
 - **Status: `partially_verified`** — static + typecheck + build xanh; runtime PENDING app live, nho QA: (1) admin nav Quan ly giua Bao cao/Nhat ky, 3 tabs + `?tab=` deep-link + arrow-key; (2) staff khong thay nav, deep-link → Check-in + toast; (3) M1: doi ky B → chi chart + Δ skeleton, tat server ky B → badge Thu lai giu ky A; xuat Excel 10k cap + PDF phu luc 500; (4) M2: inline gia Enter/Esc + confirm PD<PH + deep-link ca + luu quy tac/site + logo >512KB bi tu choi + dirty-guard; (5) M3: backup → last update + toast; restore thieu checkbox/type sai → disable, con xe do → chan, xong → man restart; (6) 200% zoom + keyboard-only.
+
+## PocketBase client mobile (auth) — MO-003
+
+Scope đúng hợp đồng: chỉ `mobile/*` (KHÔNG đụng Electron). Thêm lớp kết
+nối PocketBase cho app mobile — **auth trước, data sau (P2)**. Offline
+sqflite local giữ nguyên làm mặc định/fallback (không xóa).
+
+| File | Thay đổi |
+| ---- | -------- |
+| `mobile/pubspec.yaml` | + dep `pocketbase: ^0.25.3` (SDK chính thức; `http`/`json_annotation` transit theo; `connectivity_plus` + `shared_preferences` đã có) |
+| `mobile/lib/data/pb_client.dart` (mới) | `PbClient`: singleton qua Riverpod; URL lưu SharedPreferences key `pb_url`, default `https://mqaue7.bot-keep.xyz`; token + auth record tự persist qua `AsyncAuthStore` key `pb_auth` (SDK tự save/clear — app không cầm token thô); `normalizeUrl` (sai → `PbConfigException` tiếng Việt); `setUrl` (validate → xóa phiên cũ chống rò token sang server mới → lưu → dựng lại client); `checkHealth()` (`GET /api/health`, timeout 10s, không throw); `refreshSession()` (`authRefresh`, 401 → logout + false, rớt mạng → `PbOfflineException`); `logout()` (clear store + xóa key) |
+| `mobile/lib/data/pb_auth_remote.dart` (mới) | `pbLogin` (`authWithPassword` username — customer SĐT / staff username; `is_active=false` → LOCKED + clear store); `pbRegisterCustomer` (validate SĐT/tên/MK như local → `create` body `{username/phone/full_name/role:customer/is_active/password/passwordConfirm}` — khớp `createRule = ""` public + `pocketbase-collections.json` — rồi login lấy phiên); `PbRemoteUser.fromRecord` (map role về admin/staff/customer, lạ → customer; `permissions` Map→JSON encode; bool→int để sau); lỗi → `PbAuthFailure` message Việt thân thiện, KHÔNG lộ raw (`400` unique → PHONE_TAKEN, `400/401/403` → sai tài khoản/MK, `404` → không tồn tại, `≥500` → server bận); `SocketException`/`TimeoutException` → `PbOfflineException` |
+| `mobile/lib/repos/hybrid_auth_repo.dart` (mới) | `HybridAuthRepo` + `AuthSource {remote, local}`: login thử PB trước → mirror local (upsert row: role resolve **bằng name**, giữ `password_hash` scheme local `demo:<pw>` theo MK vừa xác thực, không đụng `notes`) rồi login local lấy `AppUser` → source remote; PB từ chối mà local đúng (tài khoản chỉ có local) → source local; rớt mạng → local. Register: PB ok → mirror + login local; rớt mạng → register local; trùng SĐT server → thử login PB luôn (đúng MK → vào app, sai → PHONE_TAKEN). `logoutRemote()` xóa phiên PB |
+| `mobile/lib/state/providers.dart` | + `pbClientProvider` (FutureProvider, init 1 lần: đọc URL + phiên lưu), `hybridAuthRepoProvider` (loader `_loadPb` timeout 8s → null = local thuần, tránh import vòng state↔repos), `authSourceProvider` |
+| `mobile/lib/screens/server_settings.dart` (mới) | Route `/settings` (public, guest mở được): nhập URL + nút Kiểm tra (health) + Lưu + Khôi phục mặc định; đổi URL → bắt đăng nhập lại; card Trạng thái (mạng online/offline, phiên Online/Local, tên user, phiên PB đã lưu); đủ loading/error(empty retry)/success states |
+| `mobile/lib/screens/auth.dart` | Login/Register qua `hybridAuthRepoProvider` + set `authSourceProvider`; icon Máy chủ (DNS) ở AppBar Login + AdminBlock; logout xóa cả phiên PB (`logoutRemote`) |
+| `mobile/lib/screens/customer_profile.dart` | Icon Máy chủ ở Cá nhân + Tôi; badge chế độ Online (PocketBase)/Ngoại tuyến (local) ở cả 2 màn; logout xóa phiên PB |
+| `mobile/lib/app.dart` | Route `/settings` + public list; staff guard cho phép `/settings` (trước đó staff bị bounce về `/s/checkin`) |
+
+Deviations/ghi rõ (cho designer QA + P2): (1) đổi server xóa token cũ là
+chủ ý bảo mật; (2) hook server ép `role` khi signup public + strip `notes`
+cho staff + `reservations.user = auth` là việc P2 (`pb_hooks`, xem
+pocketbase-guide §6/§7) — client đã ép `role=customer` nhưng server cũ/chưa
+hook vẫn tin được ở mức UI; (3) `passes` customer mine-only hiện vẫn
+client-filter theo guide (không có field user) — P2 thêm field; (4) token
+refresh: SDK không auto-refresh — `refreshSession()` gọi khi mở app/trước
+tác vụ remote (P2 gọi ở data layer); `AsyncAuthStore` chỉ restore phiên,
+hết hạn thì login lại.
+
+### Verification (MO-003)
+
+- `flutter pub get` → OK (`pocketbase 0.25.3` resolve).
+- `flutter analyze` → **No issues found!**
+- `flutter test` → **13/13 passed** (fee/validators/widget hiện có).
+- `grep print(/debugPrint(` trong `mobile/lib` → 0 (match `dynamic` chỉ ở file cũ không chạm).
+- KHÔNG chạy app (Leader chạy).
+- **Status: `verified`** (static + unit/widget xanh; runtime live cần user import schema lên server ở `pb_url` — PENDING: login online thật, health check thật, register trùng SĐT, đổi URL + rớt mạng fallback).

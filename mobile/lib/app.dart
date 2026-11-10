@@ -10,6 +10,7 @@ import '../screens/customer_more.dart';
 import '../screens/customer_profile.dart';
 import '../screens/customer_vehicles.dart';
 import '../screens/map_screen.dart';
+import '../screens/server_settings.dart';
 import '../screens/staff_attendance.dart';
 import '../screens/staff_ops.dart';
 import '../state/providers.dart';
@@ -22,7 +23,8 @@ final routerProvider = Provider<GoRouter>((ref) {
     final loc = state.matchedLocation;
     final public = loc == '/map' ||
         loc == '/login' ||
-        loc == '/register';
+        loc == '/register' ||
+        loc == '/settings';
     if (session == null) {
       return public ? loc : '/map';
     }
@@ -30,7 +32,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       return loc == '/blocked' ? loc : '/blocked';
     }
     if (role == 'staff') {
-      if (loc.startsWith('/s')) return loc;
+      if (loc.startsWith('/s') || loc == '/settings') return loc;
       return '/s/checkin';
     }
     // customer
@@ -52,6 +54,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/register',
           builder: (c, s) => const RegisterScreen()),
+      GoRoute(
+          path: '/settings',
+          builder: (c, s) => const ServerSettingsScreen()),
       GoRoute(
           path: '/blocked',
           builder: (c, s) => const AdminBlockScreen()),

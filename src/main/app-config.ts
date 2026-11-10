@@ -13,6 +13,17 @@ export const CONFIG_FILE_NAME = 'app-config.json';
 export const LOGO_MAX_BYTES = 512 * 1024; // 512KB
 const VN_PHONE_RE = /^0\d{9}$/;
 
+/** URL PocketBase online mặc định (BE-016, theo hợp đồng Leader).
+ * File cũ chưa có `pb_url` → dùng URL này; admin xóa (null) = local-only. */
+export const DEFAULT_PB_URL = 'https://mqaue7.bot-keep.xyz';
+
+/** Chuẩn hóa URL: trim + bỏ trailing slash; chuỗi rỗng → null. */
+function normalizePbUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim().replace(/\/+$/, '');
+  return t ? t : null;
+}
+
 export const DEFAULT_SETTINGS: Omit<ParkingSettings, 'updated_at'> = {
   lot_name: 'Bãi giữ xe',
   address: null,
@@ -20,6 +31,7 @@ export const DEFAULT_SETTINGS: Omit<ParkingSettings, 'updated_at'> = {
   logo_data_url: null,
   fee_grace_minutes: 30,
   fee_day_threshold_hours: 12,
+  pb_url: DEFAULT_PB_URL,
 };
 
 /** Config lives next to the DB file (dev: ./data, packaged: userData). */
@@ -42,6 +54,9 @@ function withDefaults(raw: unknown): ParkingSettings {
       Number.isInteger(r.fee_day_threshold_hours)
         ? (r.fee_day_threshold_hours as number)
         : DEFAULT_SETTINGS.fee_day_threshold_hours,
+    // BE-016: file cũ thiếu key (undefined) → default URL; null/rỗng đã lưu → giữ
+    // local-only (không tự nhảy về default để tôn trọng lựa chọn của admin).
+    pb_url: r.pb_url === undefined ? DEFAULT_PB_URL : normalizePbUrl(r.pb_url),
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : new Date().toISOString(),
   };
 }
@@ -64,6 +79,7 @@ export interface ConfigPatch {
   logo_data_url?: unknown;
   fee_grace_minutes?: unknown;
   fee_day_threshold_hours?: unknown;
+  pb_url?: unknown; // BE-016: string http(s) URL hoặc null (local-only)
 }
 
 /**
@@ -75,7 +91,7 @@ export function validateParkingPatch(
   patch: ConfigPatch,
 ): Pick<
   ParkingSettings,
-  'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours'
+  'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url'
 > {
   const errors: Record<string, string[]> = {};
   const out: Record<string, unknown> = {};
@@ -141,6 +157,20 @@ export function validateParkingPatch(
     }
   }
 
+  // BE-016: URL máy chủ online. null/rỗng = local-only (không thử online).
+  if (patch.pb_url !== undefined) {
+    if (patch.pb_url === null) {
+      out.pb_url = null;
+    } else {
+      const t = normalizePbUrl(patch.pb_url);
+      if (!t || t.length > 500 || !/^https?:\/\/.+\..+/.test(t)) {
+        errors.pb_url = ['Địa chỉ máy chủ online không hợp lệ (VD: https://ten-mien-cua-ban).'];
+      } else {
+        out.pb_url = t;
+      }
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     const err = new Error('Dữ liệu cấu hình không hợp lệ');
     (err as unknown as { errors: Record<string, string[]> }).errors = errors;
@@ -174,4 +204,19 @@ export function saveParkingSettings(db: AppDb, patch: ConfigPatch): ParkingSetti
   fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
   fs.renameSync(tmp, p);
   return next;
+}
+
+/**
+ * URL PocketBase hiệu dụng (BE-016 — auth/data online đọc từ đây).
+ * - file chưa có key → DEFAULT_PB_URL (fresh install trỏ sẵn server theo hợp đồng).
+ * - admin lưu null/rỗng → null = local-only (bỏ qua mọi thử online, vào local ngay).
+ */
+export function getPbBaseUrl(db: AppDb): string | null {
+  try {
+    const s = loadParkingSettings(db);
+    const u = typeof s.pb_url === 'string' ? s.pb_url.trim().replace(/\/+$/, '') : '';
+    return u ? u : null;
+  } catch {
+    return DEFAULT_PB_URL;
+  }
 }

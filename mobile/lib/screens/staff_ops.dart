@@ -133,7 +133,8 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
                   builder: (context, snap) {
                     final zones = snap.data ?? [];
                     return DropdownButtonFormField<int>(
-                      value: _zoneId,
+                      key: ValueKey(_zoneId),
+                      initialValue: _zoneId,
                       decoration: const InputDecoration(
                           labelText: 'Khu'),
                       items: zones

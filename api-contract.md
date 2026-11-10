@@ -571,3 +571,37 @@ export interface RestoreFromFileOutput { backup_path: string; restored_at: strin
 //   đó trả 'khởi động lại app' cho đến khi restart).
 // Lỗi: 'NOT_SQLITE' | 'INTEGRITY_FAIL' | 'SCHEMA_MISMATCH' | 'HAS_PARKED_VEHICLES'.
 ```
+
+---
+
+## 16. PocketBase online — auth trước (BE-016, data sync để P2)
+
+```ts
+// URL máy chủ online nằm trong ParkingSettings (§15 M2):
+// pb_url: string | null — null = local-only (bỏ qua mọi thử online).
+// File cũ thiếu key → default 'https://mqaue7.bot-keep.xyz'.
+// app-config:set { patch: { pb_url } } — admin-only, validate http(s) URL.
+
+export type PbMode = 'local-first' | 'online'; // V1 luôn 'local-first'
+export interface PbStatus {
+  online: boolean;      // ping GET {pb_url}/api/health OK trong 6s
+  mode: PbMode;
+  pb_url: string;       // '' khi local-only
+  latency_ms: number | null;
+}
+export interface PbTestInput { url?: string }  // override tạm để test, không lưu
+export interface PbTestResult { reachable: boolean; pb_url: string; latency_ms: number | null }
+// pb:test {PbTestInput} → {PbTestResult} (admin; message Việt đạt/không đạt)
+// pb:status void → {PbStatus} (mọi role — render badge offline)
+```
+
+- `auth:login` (giữ nguyên signature): **thử PB trước** (username/password →
+  PB `users`, login bằng username) → map `role`/`permissions` về `UserDTO` +
+  mirror local (offline sau đó login được); rớt mạng/timeout/sai-pass-PB/
+  chưa-import/5xx → **fallback SQLite local**; tài khoản bị khóa/sai role trên
+  server → lỗi Việt, không fallback. Sai pass cả 2 nơi → `'Sai tài khoản
+  hoặc mật khẩu'` (không lộ raw).
+- `auth:register` (giữ nguyên signature + thêm message): local trước
+  (validate/trùng như §12), rồi best-effort tạo user PB (role `'customer'`
+  cố định); PB fail → vẫn thành công local + message "chưa đồng bộ online".
+- `ParkingSettings` thêm `pb_url` (xem §15 M2 — cùng validate/set flow).

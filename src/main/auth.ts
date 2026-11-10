@@ -2,6 +2,8 @@
 // role guards matching api-contract.md §11 permission matrix.
 import bcrypt from 'bcryptjs';
 import type { AppDb } from './db';
+import { getPbBaseUrl } from './app-config';
+import { pbClearAuth, pbLogin, PbNoFallbackError, pbRegisterCustomer, type PbUserRecord } from './pb-client';
 import type { RoleName, StaffPermissionKey, StaffPermissions, UserDTO } from '../shared/types';
 import { STAFF_DEFAULTS } from '../shared/types';
 
@@ -163,6 +165,12 @@ export function login(db: AppDb, username: string, password: string): UserDTO {
 
 export function logout(): void {
   currentUser = null;
+  // Best-effort: xóa token online đang giữ (không throw — logout local luôn xong).
+  try {
+    pbClearAuth();
+  } catch {
+    // ignore
+  }
 }
 
 /** User-facing error (safe to show in UI). Anything else is treated as internal. */
@@ -263,4 +271,137 @@ export function registerCustomer(
     }
   });
   return tx();
+}
+
+/**
+ * Auth online-first (BE-016 — PocketBase auth trước, data sync để P2).
+ *
+ * THỨ TỰ BẮT BUỘC (giữ local-first):
+ *   1. Thử PB trước: username/password → PB collection `users`
+ *      (login bằng username theo specs/pocketbase-collections.json) →
+ *      map role/permissions về UserDTO + mirror local (xem dưới).
+ *   2. Rớt mạng/timeout/server-từ chối (sai pass/chưa import user/5xx) →
+ *      FALLBACK SQLite local (login() cũ giữ nguyên).
+ *   3. Server đã trả lời RÕ RÀNG mà tài khoản không dùng được
+ *      (bị khóa/sai role — PbNoFallbackError) → KHÔNG fallback, trả lỗi Việt.
+ *
+ * Không bao giờ để raw SDK error lọt ra IPC (pb-client đã bọc).
+ */
+export async function loginOnlineFirst(db: AppDb, username: string, password: string): Promise<UserDTO> {
+  const clean = (username ?? '').trim();
+  if (!clean || !password) throw new AppError('Tên đăng nhập và mật khẩu là bắt buộc');
+  if (getPbBaseUrl(db)) {
+    try {
+      const rec = await pbLogin(db, clean, password);
+      return upsertLocalMirrorFromPb(db, rec, password);
+    } catch (e) {
+      if (e instanceof PbNoFallbackError) throw new AppError(e.message);
+      // offline/sai-pass-PB/chưa-import → rớt xuống login local bên dưới
+    }
+  }
+  return login(db, clean, password);
+}
+
+/**
+ * Mirror user PB về SQLite local trong 1 transaction (để OFFLINE dùng được).
+ * - Đồng bộ password_hash từ đúng password vừa nhập (lần online gần nhất
+ *   thắng — offline login sau đó dùng password này).
+ * - role PB → resolve role_id bằng name (không hardcode id, cùng pattern customer §12).
+ * - permissions PB (object JSON) → stringify về cột TEXT (parse lại lúc resolvePerms).
+ * - is_active PB false đã bị chặn ở pbLogin (không mirror đè khóa local ở đây được
+ *   vì tới đây rec luôn active — vẫn ghi is_active để giữ đồng bộ 2 chiều hiển thị).
+ */
+function upsertLocalMirrorFromPb(db: AppDb, rec: PbUserRecord, plainPassword: string): UserDTO {
+  const roleName = (rec.role ?? '').trim();
+  if (roleName !== 'admin' && roleName !== 'staff' && roleName !== 'customer') {
+    throw new PbNoFallbackError('Tài khoản online chưa được phân quyền — liên hệ Admin.');
+  }
+  const hash = bcrypt.hashSync(plainPassword, 10);
+  const permsRaw =
+    rec.permissions === null || rec.permissions === undefined
+      ? null
+      : typeof rec.permissions === 'string'
+        ? rec.permissions
+        : JSON.stringify(rec.permissions);
+  const tx = db.transaction(() => {
+    const role = db.prepare(`SELECT id FROM roles WHERE name = ?`).get(roleName) as { id: number } | undefined;
+    if (!role) throw new PbNoFallbackError('Vai trò online chưa có trên máy này — mở lại app để chạy migration');
+    const existing = findUserByUsername(db, rec.username);
+    if (existing) {
+      db.prepare(
+        `UPDATE users SET password_hash = ?, full_name = ?, phone = ?, address = ?, start_date = ?,
+                permissions = ?, role_id = ?, is_active = ? WHERE id = ?`,
+      ).run(
+        hash,
+        (rec.full_name ?? '').trim() || rec.username,
+        rec.phone ?? null,
+        rec.address ?? null,
+        rec.start_date ?? null,
+        permsRaw,
+        role.id,
+        rec.is_active ? 1 : 0,
+        existing.id,
+      );
+      const row = db
+        .prepare(
+          `SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
+        )
+        .get(existing.id) as UserRow | undefined;
+      if (!row) throw new AppError('Đồng bộ tài khoản thất bại — vui lòng thử lại');
+      return toUserDTO(row);
+    }
+    try {
+      const r = db
+        .prepare(
+          `INSERT INTO users (username, password_hash, full_name, phone, address, start_date, permissions, role_id, is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          rec.username,
+          hash,
+          (rec.full_name ?? '').trim() || rec.username,
+          rec.phone ?? null,
+          rec.address ?? null,
+          rec.start_date ?? null,
+          permsRaw,
+          role.id,
+          rec.is_active ? 1 : 0,
+        );
+      const row = db
+        .prepare(
+          `SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
+        )
+        .get(r.lastInsertRowid) as UserRow | undefined;
+      if (!row) throw new AppError('Đồng bộ tài khoản thất bại — vui lòng thử lại');
+      return toUserDTO(row);
+    } catch (e) {
+      if (e instanceof AppError || e instanceof PbNoFallbackError) throw e;
+      // Race UNIQUE(username/phone) — user vừa được tạo local ở tab khác.
+      throw new AppError('Đồng bộ tài khoản thất bại — vui lòng thử lại');
+    }
+  });
+  const dto = tx();
+  currentUser = dto;
+  return dto;
+}
+
+/**
+ * Register online-first (BE-016): LOCAL TRƯỚC (registerCustomer hiện có —
+ * validate SĐT + chống trùng + không orphan user PB), rồi best-effort tạo
+ * user PB (role server-fix 'customer').
+ * QUYẾT ĐỊNH (theo hợp đồng): mirror local để offline dùng được — local là
+ * nguồn sự thật V1; PB thất bại (mất mạng/trùng online) → pbSynced=false,
+ * lần đăng nhập online sau sẽ tự mirror/pull đầy đủ.
+ */
+export async function registerCustomerOnlineFirst(
+  db: AppDb,
+  input: { phone: string; password: string; full_name: string },
+): Promise<{ user: UserDTO; pbSynced: boolean }> {
+  const user = registerCustomer(db, input);
+  try {
+    await pbRegisterCustomer(db, { phone: user.phone ?? input.phone.trim(), password: input.password, full_name: user.full_name });
+  } catch {
+    return { user, pbSynced: false };
+  }
+  return { user, pbSynced: true };
 }

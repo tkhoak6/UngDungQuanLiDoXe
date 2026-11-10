@@ -156,7 +156,8 @@ class _ReservationsScreenState
                             _zoneId = zones.first.id;
                           }
                           return DropdownButtonFormField<int>(
-                            value: _zoneId,
+                            key: ValueKey(_zoneId),
+                            initialValue: _zoneId,
                             decoration: const InputDecoration(
                                 labelText: 'Khu'),
                             items: zones

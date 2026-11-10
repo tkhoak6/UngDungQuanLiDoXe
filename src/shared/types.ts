@@ -563,6 +563,30 @@ export interface TxListOutput {
   summary: { revenue: number; tx_count: number; avg: number }; // SUM/COUNT cùng filter (không LIMIT)
 }
 
+// ---- PocketBase online (BE-016, auth trước — data sync để P2) ----
+// Local-first giữ nguyên: `mode` luôn 'local-first' ở V1; `online` chỉ
+// phản ánh ping /api/health gần nhất. Frontend dùng `pb:status` để render
+// badge offline + quyết định có hiện nút "thử lại online" không.
+
+export type PbMode = 'local-first' | 'online';
+
+export interface PbStatus {
+  online: boolean; // ping /api/health OK trong timeout
+  mode: PbMode; // V1 luôn 'local-first' (giữ chế độ local mặc định)
+  pb_url: string; // '' khi chưa cấu hình (local-only)
+  latency_ms: number | null;
+}
+
+export interface PbTestInput {
+  url?: string; // override tạm để test (không lưu); undefined → dùng URL đã cấu hình
+}
+
+export interface PbTestResult {
+  reachable: boolean;
+  pb_url: string;
+  latency_ms: number | null;
+}
+
 // ---- Management area M2 (spec ./specs/management-area.md §M2.2 — BE-015) ----
 // Parking settings persisted as JSON beside the DB file (userData/app-config.json),
 // NOT a DB table (P2 mới có bảng app_settings khi sync nhiều máy).
@@ -575,6 +599,8 @@ export interface ParkingSettings {
   logo_data_url: string | null; // PNG/JPG dataURL ≤ 512KB
   fee_grace_minutes: number; // default 30, int 0–120
   fee_day_threshold_hours: number; // default 12, int 1–24
+  pb_url: string | null; // BE-016: URL máy chủ PocketBase; null = local-only
+  // (không thử online). File cũ thiếu → mặc định DEFAULT_PB_URL (app-config.ts).
   updated_at: string; // ISO8601 (IPC set)
 }
 
@@ -582,7 +608,7 @@ export interface AppConfigSetInput {
   patch: Partial<
     Pick<
       ParkingSettings,
-      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours'
+      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url'
     >
   >;
 }
@@ -719,6 +745,8 @@ export interface ApiMap {
   'reports:transactions': { input: TxListInput; output: IpcResult<TxListOutput> };
   'app-config:get': { input: void; output: IpcResult<ParkingSettings> };
   'app-config:set': { input: AppConfigSetInput; output: IpcResult<ParkingSettings> };
+  'pb:test': { input: PbTestInput; output: IpcResult<PbTestResult> };
+  'pb:status': { input: void; output: IpcResult<PbStatus> };
   'backup:now': { input: BackupNowInput; output: IpcResult<BackupNowOutput> };
   'restore:from-file': { input: RestoreFromFileInput; output: IpcResult<RestoreFromFileOutput> };
 }
