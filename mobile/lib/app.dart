@@ -245,7 +245,7 @@ class ParkingApp extends ConsumerWidget {
       colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
     );
     return MaterialApp.router(
-      title: 'Parking Mobile',
+      title: 'Bãi Xe Thông Minh',
       theme: base.copyWith(
         appBarTheme: base.appBarTheme.copyWith(
           backgroundColor: AppColors.surface,

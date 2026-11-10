@@ -5,27 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/tokens.dart';
+import '../core/auth_messages.dart';
 import '../core/validators.dart';
 import '../repos/auth_repo.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
-String _friendly(AuthException e) {
-  switch (e.code) {
-    case 'PHONE_TAKEN':
-      return 'SĐT đã được đăng ký. Hãy đăng nhập.';
-    case 'INVALID_PHONE':
-      return 'Số điện thoại phải 10 số, bắt đầu bằng 0.';
-    case 'WRONG_PASSWORD':
-      return 'Sai mật khẩu. Thử lại.';
-    case 'NOT_FOUND':
-      return 'Tài khoản không tồn tại. Kiểm tra lại SĐT.';
-    case 'LOCKED':
-      return 'Tài khoản đã bị khóa — liên hệ quản trị viên.';
-    default:
-      return e.message;
-  }
-}
+String _friendly(AuthException e) => friendlyAuthMessage(e);
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});

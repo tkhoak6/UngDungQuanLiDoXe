@@ -1,22 +1,61 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import 'db_factory_init_stub.dart'
+    if (dart.library.js_interop) 'db_factory_init_web.dart';
+
 /// Local SQLite mirror schema desktop (api-contract §1–§14) + cột phụ
 /// `pending_sync` ở 4 bảng giao dịch. Không sync ngược V1.
+///
+/// Web: sqflite plugin không chạy trên browser nên [initDatabaseFactory]
+/// trỏ factory mặc định sang `sqflite_common_ffi_web` (SQLite/WASM +
+/// IndexedDB, cần `web/sqlite3.wasm` + `web/sqflite_sw.js` từ
+/// `dart run sqflite_common_ffi_web:setup`). Mobile giữ nguyên plugin.
 class AppDb {
   AppDb._();
 
   static final AppDb instance = AppDb._();
   Database? _db;
+  static bool _factoryInitDone = false;
+
+  /// Tài khoản staff demo dùng chung credential với desktop ở phạm vi local.
+  /// Desktop lưu bcrypt trong `D:/DA/data/parking.db`, mobile lưu scheme
+  /// `demo:<pw>` trong DB riêng (sqflite / IndexedDB trên web) — hai DB độc
+  /// lập nên mỗi bên cần seed riêng với CÙNG username + plaintext password.
+  /// MO-006: thêm `khoa01` (được tạo trên desktop, login desktop OK nhưng
+  /// mobile báo sai pass vì user không tồn tại trong DB mobile).
+  /// GIỚI HẠN: chỉ áp cho tài khoản liệt kê ở đây. Staff tạo mới trên
+  /// desktop (runtime, bcrypt) KHÔNG tự sang mobile — chờ PB-merge.
+  /// SECURITY GATE: demo-only, giữ nguyên khi sang auth production.
+  static const List<DemoStaffSeed> demoStaffSeeds = [
+    DemoStaffSeed(
+      username: 'staff01',
+      password: 'staff123',
+      fullName: 'Nhan vien Cong',
+      phone: '0909000001',
+    ),
+    DemoStaffSeed(
+      username: 'khoa01',
+      password: 'khoa01',
+      fullName: 'Nhan vien Khoa',
+      phone: '0909000002',
+    ),
+  ];
 
   Future<Database> get db async {
     final existing = _db;
     if (existing != null) return existing;
+    if (!_factoryInitDone) {
+      await initDatabaseFactory();
+      _factoryInitDone = true;
+    }
     final dir = await getDatabasesPath();
     final created = await openDatabase(
       p.join(dir, 'parking_mobile.db'),
-      version: 1,
+      // v2 (MO-006): bổ sung staff demo còn thiếu cho DB đã tạo ở v1.
+      version: 2,
       onCreate: _create,
+      onUpgrade: _upgrade,
     );
     _db = created;
     return created;
@@ -182,6 +221,38 @@ CREATE TABLE attendance (
     await _seed(db);
   }
 
+  /// v1 → v2 (MO-006): chèn idempotent các staff demo còn thiếu cho
+  /// DB đã tạo từ trước (kể cả IndexedDB trên web). Không đụng row user
+  /// đã có (giữ password_hash hiện tại nếu username trùng).
+  Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _ensureDemoStaff(db);
+    }
+  }
+
+  /// Chèn các [demoStaffSeeds] còn thiếu (tìm theo username). Dùng chung
+  /// cho seed mới ([_create]) và migration ([_upgrade]).
+  Future<void> _ensureDemoStaff(Database db) async {
+    final roles = await db.query('roles');
+    int roleId(String name) =>
+        (roles.firstWhere((r) => r['name'] == name)['id'] as int);
+    for (final s in demoStaffSeeds) {
+      final existing = await db.query(
+        'users',
+        where: 'username = ?',
+        whereArgs: [s.username],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+      await db.insert('users', {
+        'username': s.username,
+        'password_hash': 'demo:${s.password}',
+        'full_name': s.fullName,
+        'phone': s.phone,
+        'role_id': roleId('staff'),
+      });
+    }
+  }
   Future<void> _seed(Database db) async {
     await db.insert('roles', {'name': 'admin', 'description': 'Admin'});
     await db.insert('roles', {'name': 'staff', 'description': 'Nhan vien'});
@@ -199,13 +270,7 @@ CREATE TABLE attendance (
       'full_name': 'Quan tri vien',
       'role_id': roleId('admin'),
     });
-    await db.insert('users', {
-      'username': 'staff01',
-      'password_hash': 'demo:staff123',
-      'full_name': 'Nhan vien Cong',
-      'phone': '0909000001',
-      'role_id': roleId('staff'),
-    });
+    await _ensureDemoStaff(db);
     await db.insert('users', {
       'username': '0901234567',
       'password_hash': 'demo:customer123',
@@ -338,4 +403,24 @@ CREATE TABLE attendance (
     }
     return total;
   }
+}
+
+/// Một tài khoản staff demo trong seed local (MO-006).
+///
+/// `password` là PLAINTEXT demo — khi seed/mirror sẽ lưu thành
+/// `demo:<password>` (scheme local V1, xem [AuthRepo.login]).
+/// Username + plaintext phải KHỚP với desktop để cùng credential login
+/// được cả 2 app ở phạm vi local.
+class DemoStaffSeed {
+  const DemoStaffSeed({
+    required this.username,
+    required this.password,
+    required this.fullName,
+    required this.phone,
+  });
+
+  final String username;
+  final String password;
+  final String fullName;
+  final String phone;
 }

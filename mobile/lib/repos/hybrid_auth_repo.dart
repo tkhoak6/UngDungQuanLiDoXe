@@ -1,3 +1,5 @@
+import 'dart:developer' as dev;
+
 import '../data/pb_auth_remote.dart';
 import '../data/pb_client.dart';
 import '../db/app_db.dart';
@@ -46,11 +48,20 @@ class HybridAuthRepo {
         // Rớt mạng → fallback local bên dưới.
       } on PbAuthFailure catch (e) {
         // Server từ chối nhưng tài khoản có thể chỉ tồn tại local.
+        // MO-006: PB gộp "không tồn tại + sai MK" thành WRONG_PASSWORD,
+        // còn local phân biệt được — nếu local khẳng định NOT_FOUND thì
+        // báo đúng NOT_FOUND (trước đây nuốt thành WRONG_PASSWORD gây
+        // hiểu lầm "sai mật khẩu" dù user chưa từng có trong DB mobile).
         try {
           final user = await _local.login(u, password);
           return HybridAuthResult(user, AuthSource.local);
-        } on AuthException {
-          throw AuthException(e.code, e.message);
+        } on AuthException catch (localErr) {
+          dev.log(
+            'hybrid login: remote=${e.code} local=${localErr.code} '
+            '→ ${resolveRemoteFailure(e, localErr).code}',
+            name: 'HybridAuthRepo',
+          );
+          throw resolveRemoteFailure(e, localErr);
         }
       }
     }
@@ -108,6 +119,22 @@ class HybridAuthRepo {
   Future<void> logoutRemote() async {
     final pb = await _pbLoader();
     await pb?.logout();
+  }
+
+  /// Quyết định lỗi cuối khi remote từ chối + local cũng lỗi (pure — có
+  /// unit test, không chạm DB).
+  ///
+  /// - Local NOT_FOUND: tài khoản chắc chắn không có trên thiết bị này →
+  ///   báo đúng NOT_FOUND để UI hướng dẫn tạo/liên hệ admin, thay vì
+  ///   WRONG_PASSWORD gộp của PB gây hiểu lầm.
+  /// - Còn lại (sai MK local, khóa…): giữ lỗi remote (gộp, không lộ
+  ///   local có/không có user — theo chính sách message gộp vì bảo mật).
+  static AuthException resolveRemoteFailure(
+    PbAuthFailure remote,
+    AuthException local,
+  ) {
+    if (local.code == 'NOT_FOUND') return local;
+    return AuthException(remote.code, remote.message);
   }
 
   Future<HybridAuthResult> _remoteLoginAndMirror(

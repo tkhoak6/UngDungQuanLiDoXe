@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pbc_9142083765",
+    "name": "attendance",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {"autogeneratePattern": "[a-z0-9]{15}", "hidden": false, "id": "text9150100001", "max": 15, "min": 15, "name": "id", "pattern": "^[a-z0-9]+$", "primaryKey": true, "required": true, "system": true, "type": "text"},
+      {"cascadeDelete": false, "collectionId": "_pb_users_auth_", "id": "relation9150100002", "maxSelect": 1, "minSelect": 0, "name": "user", "required": true, "system": false, "type": "relation"},
+      {"id": "select9150100003", "maxSelect": 1, "name": "shift_code", "required": true, "system": false, "type": "select", "values": ["MORNING", "AFTERNOON", "NIGHT"]},
+      {"id": "date9150100004", "name": "work_date", "required": true, "system": false, "type": "date"},
+      {"id": "date9150100005", "name": "check_in_at", "system": false, "type": "date"},
+      {"id": "date9150100006", "name": "check_out_at", "system": false, "type": "date"},
+      {"id": "number9150100007", "min": 0, "name": "opening_cash", "onlyInt": false, "required": true, "system": false, "type": "number"},
+      {"id": "number9150100008", "min": 0, "name": "closing_cash", "onlyInt": false, "required": false, "system": false, "type": "number"},
+      {"id": "text9150100009", "max": 500, "min": 0, "name": "handover_note", "required": false, "system": false, "type": "text"},
+      {"id": "select9150100010", "maxSelect": 1, "name": "status", "required": true, "system": false, "type": "select", "values": ["present", "late", "missing"]},
+      {"id": "autodate9150100091", "name": "created", "onCreate": true, "onUpdate": false, "system": false, "type": "autodate"},
+      {"id": "autodate9150100092", "name": "updated", "onCreate": true, "onUpdate": true, "system": false, "type": "autodate"}
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX `idx_att_user_shift_date` ON `attendance` (`user`, `shift_code`, `work_date`)",
+      "CREATE INDEX `idx_att_user_date` ON `attendance` (`user`, `work_date`)",
+      "CREATE INDEX `idx_att_date` ON `attendance` (`work_date`)"
+    ],
+    "listRule": "@request.auth.id != \"\" && (user = @request.auth.id || @request.auth.role = \"system_admin\" || @request.auth.role = \"parking_manager\")",
+    "viewRule": "@request.auth.id != \"\" && (user = @request.auth.id || @request.auth.role = \"system_admin\" || @request.auth.role = \"parking_manager\")",
+    "createRule": "@request.auth.id != \"\"",
+    "updateRule": "user = @request.auth.id || @request.auth.role = \"system_admin\" || @request.auth.role = \"parking_manager\"",
+    "deleteRule": "@request.auth.role = \"system_admin\""
+  }
+]
