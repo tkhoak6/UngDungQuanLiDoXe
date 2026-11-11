@@ -9,6 +9,7 @@ import '../core/validators.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../widgets/plate_field.dart';
 import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
 import 'qr_scanner_sheet.dart';
@@ -118,17 +119,11 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
             child: ListView(
               padding: const EdgeInsets.all(AppGaps.s16),
               children: [
-                TextField(
+                PlateField(
                   controller: _plate,
-                  textCapitalization:
-                      TextCapitalization.characters,
-                  style: AppText.mono(18),
+                  helperText:
+                      'Tự viết hoa. Xe đang đỗ sẽ báo chuyển sang Thu phí.',
                   textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                    labelText: 'Biển số (VD 51H-12345)',
-                    helperText:
-                        'Tự viết hoa. Xe đang đỗ sẽ báo chuyển sang Thu phí.',
-                  ),
                 ),
                 const SizedBox(height: AppGaps.s12),
                 FutureBuilder<List<ParkingZone>>(

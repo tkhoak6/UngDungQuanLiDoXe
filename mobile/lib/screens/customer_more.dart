@@ -7,6 +7,7 @@ import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../widgets/plate_field.dart';
 import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
 
@@ -199,13 +200,9 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
               const Text('Đăng ký vé mới',
                   style: AppText.cardTitle),
               const SizedBox(height: AppGaps.s12),
-              TextField(
+              PlateField(
                 controller: _plate,
-                textCapitalization:
-                    TextCapitalization.characters,
-                decoration: const InputDecoration(
-                  labelText: 'Biển số (VD 51H-12345)',
-                ),
+                labelText: 'Biển số (VD 51H-12345)',
               ),
               const SizedBox(height: AppGaps.s12),
               FutureBuilder<List<ParkingZone>>(

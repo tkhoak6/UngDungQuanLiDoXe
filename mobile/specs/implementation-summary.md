@@ -1,3 +1,48 @@
+# MO-014 — ANPR quét biển số V1b (nối DS spec qr-anpr + MO-009)
+
+## Quyết định (đọc `./specs/qr-anpr.md` §2 trước khi code)
+- **100% on-device** ML Kit Text Recognition (Latin): chụp thủ công 1
+  frame/lần (không stream realtime — pin + RAM 3GB), timeout 8s, ảnh tạm
+  xóa trong `finally`, không gửi mạng, không log ảnh.
+- V1 **KHÔNG tự sửa OCR** (tránh "sửa sai thành sai khác"): chỉ gợi ý
+  fuzzy 1 ký tự ("Ý bạn là …?" 1-tap). Mọi kết quả qua màn confirm/sửa
+  tay trước khi điền form; luôn giữ nhập tay làm fallback chính.
+- Dùng `camera` (viewfinder + overlay 3:1 + torch + nút Chụp 56dp) thay
+  vì `image_picker` (không custom overlay/torch được). `mobile_scanner`
+  chỉ bọc QR — không tái dùng cho ANPR (nó không cho frame tĩnh).
+- Không có `ios/` trong repo → copy NS Camera text ghi sẵn trong spec §3,
+  P2 bổ sung khi mở build iOS.
+
+## File đã tạo/sửa (chỉ `mobile/`, không đụng desktop/Electron)
+| File | Thay đổi |
+|---|---|
+| `pubspec.yaml` | + `camera` 0.12.2, `google_mlkit_text_recognition` 1.0.2 (`flutter pub add`; dùng lại `permission_handler` đã có) |
+| `lib/core/anpr.dart` (mới, pure) | `normalize` (UPPER + chỉ [A-Z0-9]), `vnPlate` (`^(\d{2}[A-Z]{1,2})(\d{4,6})$`, 7–10 ký tự), `parse`, `display` (chèn "-" sau cụm chữ, DB vẫn UPPERCASE), `extractCandidates` (match theo dòng → token → ghép cụm 2–4 token kề, giữ thứ tự, khử trùng — chịu được OCR tách "51h-123.45" thành 4 mảnh), `suggest` (fuzzy 1-edit 0↔O/D, 1↔I/L, 8↔B, 5↔S, 2↔Z; đã hợp lệ → null) |
+| `lib/data/anpr_recognizer.dart` (mới) | Interface `AnprRecognizer` (`recognize`/`close`) + `MlKitAnprRecognizer` (Latin, `InputImage.fromFilePath`) — tách để test mock không cần camera/model |
+| `lib/screens/anpr_sheet.dart` (mới) | `openAnprSheet()` → bottom sheet 90%: rationale Việt → system prompt → viewfinder 280 + overlay 3:1 (Primary 2dp, bo 8) + Chụp 56dp + torch/đóng 48dp + "Nhập tay". Chụp → ML Kit (8s) → 0 ứng viên: warning inline ở lại camera; 1: màn confirm (TextField sửa + gợi ý fuzzy live + "Điền vào form"); nhiều: radio list mono 18 + "Điền". Recognizer init khi mở sheet, `close()` + camera dispose khi đóng; từ chối 1 lần → đóng sheet (về nhập tay); vĩnh viễn → "Mở Cài đặt"; kIsWeb → text-only + nhập tay. Copy Việt + semanticLabel theo spec §3/§5 |
+| `lib/widgets/plate_field.dart` (mới) | `PlateField`: TextField mono 18 + suffix camera 48dp + helper "Kiểm tra lại biển số…" sau quét + gợi ý fuzzy live (hoãn post-frame để không setState giữa build — an toàn với prefill trong FutureBuilder, giữ focus như MO-013). Quét xong: điền display-form + toast "Đã điền … — kiểm tra lại." + focus field. Hủy/lỗi → null, giữ nhập tay |
+| `lib/screens/staff_ops.dart` | Ô biển số check-in → `PlateField` (giữ helper cũ + `next`) |
+| `lib/screens/customer_main.dart` | Đặt chỗ: mode 1 xe → `PlateField`; mode dropdown (>1 xe) → thêm nút "Quét biển số" 48dp (`_scanIntoPlates`: khớp xe có sẵn thì chọn, biển lạ → custom + điền) |
+| `lib/screens/customer_more.dart` | Đăng ký vé P3 Section B → `PlateField` |
+| `test/anpr_mo014_test.dart` (mới, 18 tests) | normalize/parse-valid/sai/display/extract (đơn, tách token, đa biển, rỗng, thường+gạch, vụn 4 token)/suggest (hợp lệ→null, S→5, B→8, sai >1→null)/mock recognizer 2 tests |
+
+## Luồng ANPR (theo hợp đồng)
+- Bấm camera cạnh ô biển số → rationale → viewfinder + Chụp → on-device
+  → confirm/sửa (gợi ý fuzzy, không tự sửa) → điền form + toast + focus.
+  Từ chối/quá timeout/fail → về nhập tay, không kẹt.
+- Offline 100% (model bundle theo app). Không key, không mạng, không
+  thay đổi submit/validate hiện có (`Validators.plate` vẫn chốt ở submit).
+
+## Verification (11/11/2026, Flutter 3.47.9, `D:\flutter\bin\flutter.bat`)
+- `flutter analyze` → No issues found!
+- `flutter test` → All tests passed! (69 tests: 51 cũ + 18 mới MO-014)
+- grep `print(|debugPrint(` trong `lib/` → 0 match
+- KHÔNG chạy app, KHÔNG đụng desktop/Electron (theo contract).
+- Test thiết bị thật: **PENDING user** (camera + ML Kit cần device thật;
+  widget/unit đã pass trên VM).
+
+---
+
 # MO-012 — Đặt nhanh 1 chạm + 24/24 mobile (nối BE-019 + FE-023)
 
 ## Quyết định (đọc spec trước khi code)

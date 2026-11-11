@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/anpr.dart';
 import '../core/format.dart';
 import '../core/reservations.dart';
 import '../core/retained_future.dart';
@@ -12,7 +13,9 @@ import '../core/validators.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../widgets/plate_field.dart';
 import '../widgets/ui.dart';
+import 'anpr_sheet.dart';
 
 /// Đặt chỗ 24/24 + qua đêm (MO-012, nối BE-019 + FE-023 desktop).
 /// Mode mặc định "đặt nhanh": Khu + Biển số (prefill xe đầu tiên) +
@@ -98,6 +101,32 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
         _formErr = null;
       });
     }
+  }
+
+  /// Quét ANPR cho mode dropdown (>1 xe): khớp xe có sẵn thì chọn,
+  /// biển lạ thì chuyển sang nhập tay với biển vừa quét. Hủy/lỗi →
+  /// giữ nguyên form (không kẹt).
+  Future<void> _scanIntoPlates(List<String> plates) async {
+    final norm = await openAnprSheet(context);
+    if (norm == null || !mounted) return;
+    String? match;
+    for (final p in plates) {
+      if (Anpr.normalize(p) == norm) {
+        match = p;
+        break;
+      }
+    }
+    setState(() {
+      if (match != null) {
+        _plateCustom = false;
+        _plate.text = match;
+      } else {
+        _plateCustom = true;
+        _plate.text = Anpr.display(norm);
+      }
+      _formErr = null;
+    });
+    if (mounted) toastPlateFilled(context, norm);
   }
 
   Future<void> _submit(AppUser me, {required bool quick}) async {
@@ -374,54 +403,70 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
                             final plates = vehicles
                                 .map((v) => v.licensePlate)
                                 .toList();
-                            return DropdownButtonFormField<
-                                String>(
-                              initialValue: plates
-                                      .contains(_plate.text)
-                                  ? _plate.text
-                                  : null,
-                              decoration: const InputDecoration(
-                                labelText: 'Biển số xe *',
-                                helperText:
-                                    'Biển số đối soát khi check-in bằng mã giữ chỗ',
-                              ),
-                              items: [
-                                ...plates.map((p) =>
-                                    DropdownMenuItem<String>(
-                                      value: p,
-                                      child: PlateText(p,
-                                          size: 14),
-                                    )),
-                                const DropdownMenuItem<String>(
-                                  value: '__custom',
-                                  child:
-                                      Text('Biển số khác…'),
+                            return Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.stretch,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                DropdownButtonFormField<
+                                    String>(
+                                  initialValue: plates
+                                          .contains(_plate.text)
+                                      ? _plate.text
+                                      : null,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Biển số xe *',
+                                    helperText:
+                                        'Biển số đối soát khi check-in bằng mã giữ chỗ',
+                                  ),
+                                  items: [
+                                    ...plates.map((p) =>
+                                        DropdownMenuItem<String>(
+                                          value: p,
+                                          child: PlateText(p,
+                                              size: 14),
+                                        )),
+                                    const DropdownMenuItem<String>(
+                                      value: '__custom',
+                                      child:
+                                          Text('Biển số khác…'),
+                                    ),
+                                  ],
+                                  onChanged: (v) {
+                                    if (v == null) return;
+                                    setState(() {
+                                      if (v == '__custom') {
+                                        _plateCustom = true;
+                                        _plate.clear();
+                                      } else {
+                                        _plate.text = v;
+                                      }
+                                      _formErr = null;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(height: AppGaps.s8),
+                                SizedBox(
+                                  height: 48,
+                                  child: OutlinedButton.icon(
+                                    onPressed: () =>
+                                        _scanIntoPlates(plates),
+                                    icon: const Icon(
+                                      Icons.photo_camera_outlined,
+                                      semanticLabel: 'Quét biển số',
+                                    ),
+                                    label: const Text('Quét biển số'),
+                                  ),
                                 ),
                               ],
-                              onChanged: (v) {
-                                if (v == null) return;
-                                setState(() {
-                                  if (v == '__custom') {
-                                    _plateCustom = true;
-                                    _plate.clear();
-                                  } else {
-                                    _plate.text = v;
-                                  }
-                                  _formErr = null;
-                                });
-                              },
                             );
                           }
-                          return TextField(
+                          return PlateField(
                             controller: _plate,
-                            textCapitalization:
-                                TextCapitalization.characters,
-                            decoration: const InputDecoration(
-                              labelText: 'Biển số xe *',
-                              hintText: 'VD 51H-12345',
-                              helperText:
-                                  'Biển số đối soát khi check-in bằng mã giữ chỗ',
-                            ),
+                            labelText: 'Biển số xe *',
+                            hintText: 'VD 51H-12345',
+                            helperText:
+                                'Biển số đối soát khi check-in bằng mã giữ chỗ',
                             onChanged: (_) => setState(
                                 () => _formErr = null),
                           );

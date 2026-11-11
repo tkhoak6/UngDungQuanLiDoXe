@@ -52,6 +52,8 @@ android {
 
     buildTypes {
         release {
+        isMinifyEnabled = false
+        isShrinkResources = false
             // Dùng keystore release nếu key.properties + file tồn tại,
             // ngược lại fallback debug để `flutter run --release` vẫn chạy được.
             val storeFilePath = keystoreProperties.getProperty("storeFile")
