@@ -9,6 +9,7 @@ import { mockApi } from '../lib/mockApi';
 import { isValidVNPhone } from '../lib/format';
 import { DEFAULT_SETTINGS, readSettingsCache, writeSettingsCache } from '../lib/management';
 import { ManagementConfigPrices } from './ManagementConfigPrices';
+import { ManagementConfigServer } from './ManagementConfigServer';
 import type { ParkingSettings, ParkingZone, Shift } from '../types';
 
 type Status = 'loading' | 'error' | 'ready';
@@ -35,6 +36,9 @@ export function ManagementConfig({ onGoShifts, onDirtyChange }: Props): JSX.Elem
   const [phone, setPhone] = useState('');
   const [logo, setLogo] = useState<string | null>(null);
   const [logoError, setLogoError] = useState('');
+  // Máy chủ PocketBase (FE-022 — section con tự fetch pb:status + lưu riêng)
+  const [pbUrl, setPbUrl] = useState<string | null>(DEFAULT_SETTINGS.pb_url);
+  const [pbLot, setPbLot] = useState<string | null>(DEFAULT_SETTINGS.pb_parking_lot);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [savedAt, setSavedAt] = useState('');
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -60,6 +64,8 @@ export function ManagementConfig({ onGoShifts, onDirtyChange }: Props): JSX.Elem
     setLogo(cached.logo_data_url);
     setGrace(String(cached.fee_grace_minutes));
     setThreshold(String(cached.fee_day_threshold_hours));
+    setPbUrl(cached.pb_url);
+    setPbLot(cached.pb_parking_lot);
     setSavedAt(cached.updated_at);
     const [zRes, sRes, cRes] = await Promise.all([
       callApi((a) => a.listZones(), () => mockApi.listZones()),
@@ -81,6 +87,8 @@ export function ManagementConfig({ onGoShifts, onDirtyChange }: Props): JSX.Elem
       setLogo(s.logo_data_url);
       setGrace(String(s.fee_grace_minutes));
       setThreshold(String(s.fee_day_threshold_hours));
+      setPbUrl(s.pb_url);
+      setPbLot(s.pb_parking_lot);
       setSavedAt(s.updated_at);
       writeSettingsCache(s);
     }
@@ -180,6 +188,7 @@ export function ManagementConfig({ onGoShifts, onDirtyChange }: Props): JSX.Elem
   return (
     <div style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <ManagementConfigPrices zones={zones} onSaved={setZones} notify={pushToast} />
+      <ManagementConfigServer initialUrl={pbUrl} initialLot={pbLot} onDirty={markDirty} notify={pushToast} />
 
       <section className="card" aria-labelledby="cfg-shifts">
         <h3 id="cfg-shifts" style={{ margin: '0 0 8px', fontSize: 16 }}>Khung ca làm việc</h3>

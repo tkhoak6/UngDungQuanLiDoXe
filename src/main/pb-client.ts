@@ -1,5 +1,7 @@
-// PocketBase online client — singleton + health check + auth ops (BE-016).
-// Scope V1: AUTH TRƯỚC (login/register). Data sync (zones/spots/...) để P2.
+// PocketBase online client — singleton + health check + auth ops + mapping
+// đúng schema server thật (BE-017, nguồn: specs/pb-server-map.json).
+// V1: AUTH TRƯỚC (login/register). Data sync (zones/spots/...) để P2 —
+// file này đã có sẵn mapping enum + helper parking_lot để P2 dùng ngay.
 // Local-first giữ nguyên: mọi lỗi mạng/server-từ chối ở đây đều được caller
 // (auth.ts) fallback về SQLite; file này KHÔNG bao giờ để raw SDK error lọt ra IPC.
 //
@@ -8,7 +10,7 @@
 // Types vẫn lấy từ package root (type-only import, bị xóa lúc compile).
 import type PocketBase from 'pocketbase';
 import type { AppDb } from './db';
-import { getPbBaseUrl } from './app-config';
+import { getPbBaseUrl, getPbParkingLot } from './app-config';
 import type { PbStatus, PbTestResult } from '../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -30,20 +32,141 @@ export class PbNoFallbackError extends Error {
   }
 }
 
-/** Record `users` PocketBase (subset dùng ở V1 — xem specs/pocketbase-collections.json). */
+/**
+ * Record `users` PocketBase theo SCHEMA SERVER THẬT (pb-server-map.json).
+ * Server dùng `name` (KHÔNG có `full_name`), `status` active/inactive
+ * (KHÔNG có cột boolean `is_active`), role server
+ * system_admin/parking_manager/staff/customer.
+ * KHÔNG có: address, start_date, permissions, notes (local-only — xem auth.ts).
+ */
 export interface PbUserRecord {
   id: string;
-  username: string;
-  full_name: string;
-  phone: string | null;
-  address: string | null;
-  start_date: string | null;
+  email: string;
+  username?: string | null;
+  name: string;
+  phone?: string | null;
+  avatar?: string | null;
   role: string;
-  is_active: boolean;
-  permissions: unknown;
+  status?: string | null;
+  /** Compat BE-016 (server cũ/giả định) — server thật không có cột này. */
+  is_active?: boolean | null;
+  organization?: string | null;
+  assigned_lots?: string[] | null;
+  employee_code?: string | null;
+  position?: string | null;
+  last_login_at?: string | null;
+  customer?: string | null;
   created: string;
   updated: string;
 }
+
+/**
+ * Role mapping 2 chiều (merge-plan §3.1/§5.3).
+ * - Server → local: system_admin→admin, parking_manager→admin (app không có
+ *   role này — đọc như admin theo rules server), staff→staff, customer→customer.
+ * - Local → server: admin→system_admin, staff→staff, customer→customer
+ *   (guest KHÔNG có row server → null).
+ */
+export type LocalMirrorRole = 'admin' | 'staff' | 'customer';
+
+export function pbRoleToLocal(role: string): LocalMirrorRole | null {
+  switch ((role ?? '').trim()) {
+    case 'system_admin':
+    case 'parking_manager': // app không có parking_manager — đọc như admin
+      return 'admin';
+    case 'staff':
+      return 'staff';
+    case 'customer':
+      return 'customer';
+    default:
+      return null;
+  }
+}
+
+export function localRoleToPb(role: string): 'system_admin' | 'staff' | 'customer' | null {
+  switch ((role ?? '').trim()) {
+    case 'admin':
+      return 'system_admin';
+    case 'staff':
+      return 'staff';
+    case 'customer':
+      return 'customer';
+    default:
+      return null; // guest → không có row server
+  }
+}
+
+// ---- Enum mapping local ↔ server (merge-plan §3 — P2 data-sync dùng) ----
+// Local giữ nguyên (SQLite + UI không đổi); map khi ghi/đọc PB.
+
+/** sessions.status: local 'parked' ↔ server 'parking'. */
+export function localSessionStatusToPb(s: string): string {
+  return s === 'parked' ? 'parking' : s;
+}
+export function pbSessionStatusToLocal(s: string): string {
+  return s === 'parking' ? 'parked' : s;
+}
+
+/** parking_spots.status: local 'available' ↔ server 'empty'. */
+export function localSpotStatusToPb(s: string): string {
+  return s === 'available' ? 'empty' : s;
+}
+export function pbSpotStatusToLocal(s: string): string {
+  return s === 'empty' ? 'available' : s;
+}
+
+/** reservations.status: local → server (merge-plan §3.8). */
+const RESERVATION_TO_PB: Record<string, string> = {
+  pending: 'pending',
+  active: 'confirmed',
+  completed: 'checked_in',
+  cancelled: 'cancelled',
+  expired: 'no_show',
+};
+const RESERVATION_FROM_PB: Record<string, string> = {
+  pending: 'pending',
+  confirmed: 'active',
+  checked_in: 'completed',
+  cancelled: 'cancelled',
+  no_show: 'expired',
+};
+export function localReservationStatusToPb(s: string): string {
+  return RESERVATION_TO_PB[s] ?? s;
+}
+export function pbReservationStatusToLocal(s: string): string {
+  return RESERVATION_FROM_PB[s] ?? s;
+}
+
+/** payments.method: local → server (merge-plan §3.7: card không có → bank_transfer + ghi "card" vào note). */
+export function localPaymentMethodToPb(m: string): { method: string; noteSuffix: string | null } {
+  switch (m) {
+    case 'cash':
+      return { method: 'cash', noteSuffix: null };
+    case 'transfer':
+      return { method: 'bank_transfer', noteSuffix: null };
+    case 'card':
+      return { method: 'bank_transfer', noteSuffix: 'card' };
+    case 'e_wallet':
+      return { method: 'momo', noteSuffix: null };
+    default:
+      return { method: m, noteSuffix: null };
+  }
+}
+
+/** Tên collection server (merge-plan §5.1: spots→parking_spots, sessions→parking_sessions, passes→monthly_passes). */
+export const PB_COLLECTIONS = {
+  users: 'users',
+  zones: 'zones',
+  spots: 'parking_spots',
+  sessions: 'parking_sessions',
+  vehicles: 'vehicles',
+  customers: 'customers',
+  passes: 'monthly_passes',
+  payments: 'payments',
+  reservations: 'reservations',
+  shifts: 'shifts',
+  attendance: 'attendance',
+} as const;
 
 let cached: { baseUrl: string; pb: PocketBase } | null = null;
 
@@ -111,12 +234,14 @@ async function pingHealth(baseUrl: string, timeoutMs: number): Promise<{ reachab
 /**
  * Trạng thái online cho IPC `pb:status` (không throw — mất mạng = offline).
  * `mode` luôn 'local-first' ở V1 (giữ chế độ local mặc định theo out-of-scope).
+ * Kèm `parking_lot` đang dùng (merge-plan §4); null = chưa cấu hình = local-only.
  */
 export async function pbGetStatus(db: AppDb): Promise<PbStatus> {
+  const parkingLot = getPbParkingLot(db);
   const baseUrl = getPbBaseUrl(db);
-  if (!baseUrl) return { online: false, mode: 'local-first', pb_url: '', latency_ms: null };
+  if (!baseUrl) return { online: false, mode: 'local-first', pb_url: '', latency_ms: null, parking_lot: parkingLot };
   const h = await pingHealth(baseUrl, PB_HEALTH_TIMEOUT_MS);
-  return { online: h.reachable, mode: 'local-first', pb_url: baseUrl, latency_ms: h.latencyMs };
+  return { online: h.reachable, mode: 'local-first', pb_url: baseUrl, latency_ms: h.latencyMs, parking_lot: parkingLot };
 }
 
 /**
@@ -136,7 +261,31 @@ export async function pbTestConnection(db: AppDb, urlOverride?: string): Promise
 }
 
 /**
- * Login PB bằng username (staff username / SĐT customer — PB `allowUsernameAuth`).
+ * ID bãi server bắt buộc cho mọi create/filter PB (merge-plan §4).
+ * Thiếu → PbNoFallbackError VI (caller hiện message, KHÔNG fallback lặng).
+ */
+export function requirePbParkingLot(db: AppDb): string {
+  const lot = getPbParkingLot(db);
+  if (!lot) {
+    throw new PbNoFallbackError(
+      'Chưa cấu hình bãi xe (mã parking_lot) — vào Cấu hình nhập ID bãi do system_admin cấp để đồng bộ online.',
+    );
+  }
+  return lot;
+}
+
+/**
+ * Chuỗi filter SDK kèm parking_lot cho P2 list (tránh thấy dữ liệu bãi khác).
+ * VD: `parking_lot = "pbc_abc..."`. Escape `"` phòng ID lạ.
+ */
+export function pbLotFilter(db: AppDb): string {
+  const lot = requirePbParkingLot(db);
+  return `parking_lot = "${lot.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Login PB — server cho phép identity `username` HOẶC `email`
+ * (identityFields đã có cả 2 sau thao tác tay §2A; customer login username = SĐT).
  * - Thành công → record (caller kiểm tra khóa/role rồi mirror local).
  * - Sai pass/mất mạng/timeout/server 5xx → Error thường → caller FALLBACK local.
  * - KHÔNG lộ raw SDK error (message nội bộ, không trả ra IPC).
@@ -146,19 +295,24 @@ export async function pbLogin(db: AppDb, username: string, password: string): Pr
   if (!pb) throw new Error('PB_DISABLED');
   try {
     const auth = await withAbort(
-      (signal) => pb.collection('users').authWithPassword(username, password, { signal }),
+      (signal) => pb.collection(PB_COLLECTIONS.users).authWithPassword(username, password, { signal }),
       PB_AUTH_TIMEOUT_MS,
     );
     const rec = auth.record as unknown as PbUserRecord | null | undefined;
-    if (!rec || typeof rec !== 'object' || !rec.username) {
+    if (!rec || typeof rec !== 'object' || !(rec.username || rec.email)) {
       throw new PbNoFallbackError('Máy chủ online trả về dữ liệu lạ — vui lòng thử lại');
     }
-    if (rec.is_active === false) {
+    // Server thật dùng `status` active/inactive (giữ compat `is_active` BE-016).
+    const locked = rec.status ? rec.status !== 'active' : rec.is_active === false;
+    if (locked) {
       throw new PbNoFallbackError('Tài khoản bị khóa — liên hệ Admin.');
     }
     const role = (rec.role ?? '').trim();
-    if (!role || role === 'guest') {
+    if (role === 'guest') {
       throw new PbNoFallbackError('Vai trò Khách không cần đăng nhập');
+    }
+    if (!pbRoleToLocal(role)) {
+      throw new PbNoFallbackError('Tài khoản online chưa được phân quyền — liên hệ Admin.');
     }
     return rec;
   } catch (e) {
@@ -170,12 +324,19 @@ export async function pbLogin(db: AppDb, username: string, password: string): Pr
 }
 
 /**
- * Tạo user customer trên PB (role server-fix 'customer' — client LUÔN gửi
- * đúng role này; chống nâng quyền thật sự phải chờ hook P2 `pb_hooks`,
- * xem backend-summary BE-016 §rủi ro).
- * Thất bại (mất mạng/trùng SĐT online) → Error thường → caller giữ local,
- * đánh dấu chưa đồng bộ (offline vẫn dùng được).
+ * Tạo user customer trên PB.
+ * Payload đúng schema server: `name` (KHÔNG phải `full_name`), `email`
+ * bắt buộc (dùng placeholder `SĐT@lot.local` khi không có email thật —
+ * merge-plan §2A), `status: 'active'`.
+ * LƯU Ý server `users.createRule = role=system_admin` (pb-server-map.json):
+ * signup ẩn danh sẽ 403 cho tới khi server nới rule — caller best-effort
+ * (thất bại → giữ local, đánh dấu chưa đồng bộ, offline vẫn dùng được).
+ * Thất bại (mất mạng/trùng SĐT online) → Error thường → caller giữ local.
  */
+export function pbCustomerEmailPlaceholder(phone: string): string {
+  return `${phone}@lot.local`;
+}
+
 export async function pbRegisterCustomer(
   db: AppDb,
   input: { phone: string; password: string; full_name: string },
@@ -185,15 +346,16 @@ export async function pbRegisterCustomer(
   try {
     await withAbort(
       (signal) =>
-        pb.collection('users').create(
+        pb.collection(PB_COLLECTIONS.users).create(
           {
             username: input.phone,
+            email: pbCustomerEmailPlaceholder(input.phone),
             password: input.password,
             passwordConfirm: input.password,
-            full_name: input.full_name,
+            name: input.full_name,
             phone: input.phone,
             role: 'customer',
-            is_active: true,
+            status: 'active',
           },
           { signal },
         ),
@@ -217,7 +379,7 @@ export async function pbEnsureAuth(db: AppDb): Promise<PocketBase> {
     throw new PbNoFallbackError('Phiên online hết hạn — vui lòng đăng nhập lại');
   }
   try {
-    await withAbort((signal) => pb.collection('users').authRefresh({ signal }), PB_HEALTH_TIMEOUT_MS);
+    await withAbort((signal) => pb.collection(PB_COLLECTIONS.users).authRefresh({ signal }), PB_HEALTH_TIMEOUT_MS);
     return pb;
   } catch (e) {
     const st = pbStatusOf(e);

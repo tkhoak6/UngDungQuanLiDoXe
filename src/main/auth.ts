@@ -3,7 +3,7 @@
 import bcrypt from 'bcryptjs';
 import type { AppDb } from './db';
 import { getPbBaseUrl } from './app-config';
-import { pbClearAuth, pbLogin, PbNoFallbackError, pbRegisterCustomer, type PbUserRecord } from './pb-client';
+import { pbClearAuth, pbLogin, PbNoFallbackError, pbRegisterCustomer, pbRoleToLocal, type PbUserRecord } from './pb-client';
 import type { RoleName, StaffPermissionKey, StaffPermissions, UserDTO } from '../shared/types';
 import { STAFF_DEFAULTS } from '../shared/types';
 
@@ -274,12 +274,13 @@ export function registerCustomer(
 }
 
 /**
- * Auth online-first (BE-016 — PocketBase auth trước, data sync để P2).
+ * Auth online-first (BE-016 — PocketBase auth trước, data sync để P2;
+ * BE-017 map đúng schema server thật specs/pb-server-map.json).
  *
  * THỨ TỰ BẮT BUỘC (giữ local-first):
- *   1. Thử PB trước: username/password → PB collection `users`
- *      (login bằng username theo specs/pocketbase-collections.json) →
- *      map role/permissions về UserDTO + mirror local (xem dưới).
+ *   1. Thử PB trước: username HOẶC email (identityFields server có cả 2 —
+ *      merge-plan §2A) → collection `users` → map role/status về
+ *      UserDTO + mirror local (xem dưới).
  *   2. Rớt mạng/timeout/server-từ chối (sai pass/chưa import user/5xx) →
  *      FALLBACK SQLite local (login() cũ giữ nguyên).
  *   3. Server đã trả lời RÕ RÀNG mà tài khoản không dùng được
@@ -304,42 +305,43 @@ export async function loginOnlineFirst(db: AppDb, username: string, password: st
 
 /**
  * Mirror user PB về SQLite local trong 1 transaction (để OFFLINE dùng được).
+ * Map đúng schema server thật (BE-017, merge-plan §3.1):
+ * - role server → role local BẰNG NAME (pbRoleToLocal): system_admin→admin,
+ *   parking_manager→admin (app không có role này — đọc như admin),
+ *   staff→staff, customer→customer. Không hardcode id.
+ * - `name` → `full_name`; `status` active/inactive (compat `is_active` cũ) →
+ *   `is_active` 1/0. `is_active` false đã bị chặn ở pbLogin (không mirror đè
+ *   khóa local ở đây được vì tới đây rec luôn active — vẫn ghi is_active để
+ *   giữ đồng bộ 2 chiều hiển thị).
+ * - LOCAL-ONLY, KHÔNG sync từ server (server KHÔNG có các cột này —
+ *   merge-plan §3.1/§5.7): `address`, `start_date`, `permissions`, `notes`.
+ *   Update → GIỮ NGUYÊN giá trị local; insert → NULL (quyền mặc định full).
  * - Đồng bộ password_hash từ đúng password vừa nhập (lần online gần nhất
  *   thắng — offline login sau đó dùng password này).
- * - role PB → resolve role_id bằng name (không hardcode id, cùng pattern customer §12).
- * - permissions PB (object JSON) → stringify về cột TEXT (parse lại lúc resolvePerms).
- * - is_active PB false đã bị chặn ở pbLogin (không mirror đè khóa local ở đây được
- *   vì tới đây rec luôn active — vẫn ghi is_active để giữ đồng bộ 2 chiều hiển thị).
  */
 function upsertLocalMirrorFromPb(db: AppDb, rec: PbUserRecord, plainPassword: string): UserDTO {
-  const roleName = (rec.role ?? '').trim();
-  if (roleName !== 'admin' && roleName !== 'staff' && roleName !== 'customer') {
+  const roleName = pbRoleToLocal(rec.role ?? '');
+  if (!roleName) {
     throw new PbNoFallbackError('Tài khoản online chưa được phân quyền — liên hệ Admin.');
   }
   const hash = bcrypt.hashSync(plainPassword, 10);
-  const permsRaw =
-    rec.permissions === null || rec.permissions === undefined
-      ? null
-      : typeof rec.permissions === 'string'
-        ? rec.permissions
-        : JSON.stringify(rec.permissions);
+  const isActive = rec.status ? (rec.status === 'active' ? 1 : 0) : rec.is_active === false ? 0 : 1;
+  const fullName = (rec.name ?? '').trim() || (rec.username ?? '').trim() || rec.email;
   const tx = db.transaction(() => {
     const role = db.prepare(`SELECT id FROM roles WHERE name = ?`).get(roleName) as { id: number } | undefined;
     if (!role) throw new PbNoFallbackError('Vai trò online chưa có trên máy này — mở lại app để chạy migration');
-    const existing = findUserByUsername(db, rec.username);
+    const existing = findUserByUsername(db, (rec.username ?? '').trim() || rec.email);
     if (existing) {
+      // Giữ nguyên address/start_date/permissions/notes local (server không có).
       db.prepare(
-        `UPDATE users SET password_hash = ?, full_name = ?, phone = ?, address = ?, start_date = ?,
-                permissions = ?, role_id = ?, is_active = ? WHERE id = ?`,
+        `UPDATE users SET password_hash = ?, full_name = ?, phone = ?,
+                role_id = ?, is_active = ? WHERE id = ?`,
       ).run(
         hash,
-        (rec.full_name ?? '').trim() || rec.username,
+        fullName,
         rec.phone ?? null,
-        rec.address ?? null,
-        rec.start_date ?? null,
-        permsRaw,
         role.id,
-        rec.is_active ? 1 : 0,
+        isActive,
         existing.id,
       );
       const row = db
@@ -353,19 +355,16 @@ function upsertLocalMirrorFromPb(db: AppDb, rec: PbUserRecord, plainPassword: st
     try {
       const r = db
         .prepare(
-          `INSERT INTO users (username, password_hash, full_name, phone, address, start_date, permissions, role_id, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO users (username, password_hash, full_name, phone, role_id, is_active)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
         .run(
-          rec.username,
+          (rec.username ?? '').trim() || rec.email,
           hash,
-          (rec.full_name ?? '').trim() || rec.username,
+          fullName,
           rec.phone ?? null,
-          rec.address ?? null,
-          rec.start_date ?? null,
-          permsRaw,
           role.id,
-          rec.is_active ? 1 : 0,
+          isActive,
         );
       const row = db
         .prepare(

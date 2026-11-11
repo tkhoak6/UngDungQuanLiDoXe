@@ -567,14 +567,30 @@ export interface TxListOutput {
 // Local-first giữ nguyên: `mode` luôn 'local-first' ở V1; `online` chỉ
 // phản ánh ping /api/health gần nhất. Frontend dùng `pb:status` để render
 // badge offline + quyết định có hiện nút "thử lại online" không.
+// Schema thật: xem specs/pb-server-map.json (BE-017 — thay mọi giả định cũ
+// từ specs/pocketbase-collections.json).
 
 export type PbMode = 'local-first' | 'online';
+
+/** Role trên server (users.role) — app local KHÔNG có `parking_manager`/`guest`
+ * (merge-plan §3.1: admin↔system_admin, staff↔staff, customer↔customer;
+ * parking_manager đọc như admin; guest không có row). */
+export type PbServerRole = 'system_admin' | 'parking_manager' | 'staff' | 'customer';
+
+// Enum server cho P2 data-sync (tên/giá trị KHÁC local — KHÔNG dùng lẫn):
+export type PbSpotStatus = 'empty' | 'occupied' | 'reserved' | 'maintenance'; // local 'available'→'empty'
+export type PbSessionStatus = 'parking' | 'completed' | 'cancelled'; // local 'parked'→'parking'
+export type PbReservationStatus = 'pending' | 'confirmed' | 'checked_in' | 'cancelled' | 'no_show';
+export type PbPaymentMethod = 'cash' | 'vietqr' | 'bank_transfer' | 'momo'; // local card→bank_transfer+note, transfer→bank_transfer, e_wallet→momo
+export type PbPaymentStatus = 'paid' | 'refunded' | 'cancelled';
+export type PbVehicleType = 'motorbike' | 'car' | 'bicycle' | 'e_bike' | 'truck'; // app chỉ dùng car/motorbike
 
 export interface PbStatus {
   online: boolean; // ping /api/health OK trong timeout
   mode: PbMode; // V1 luôn 'local-first' (giữ chế độ local mặc định)
   pb_url: string; // '' khi chưa cấu hình (local-only)
   latency_ms: number | null;
+  parking_lot: string | null; // BE-017: id bãi server đang dùng; null = chưa cấu hình (local-only)
 }
 
 export interface PbTestInput {
@@ -601,6 +617,9 @@ export interface ParkingSettings {
   fee_day_threshold_hours: number; // default 12, int 1–24
   pb_url: string | null; // BE-016: URL máy chủ PocketBase; null = local-only
   // (không thử online). File cũ thiếu → mặc định DEFAULT_PB_URL (app-config.ts).
+  pb_parking_lot: string | null; // BE-017: id bãi server (parking_lots) — MỌI
+  // create/filter PB PHẢI gắn kèm (server bắt buộc). null = chưa cấu hình =
+  // local-only (không thử online). Xin id từ system_admin.
   updated_at: string; // ISO8601 (IPC set)
 }
 
@@ -608,7 +627,7 @@ export interface AppConfigSetInput {
   patch: Partial<
     Pick<
       ParkingSettings,
-      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url'
+      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url' | 'pb_parking_lot'
     >
   >;
 }

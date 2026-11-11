@@ -658,3 +658,66 @@ DB packaged app nằm ở `<userData>/parking.db`.
 - **Status: verified** cho mọi nhánh không cần user PB thật (logic + types +
   IPC wiring + fallback offline + validation đều chạy thật; chỉ chưa test
   GUI click-through và nhánh PB-auth-success live).
+
+## BE-017 — Trỏ backend vào schema PocketBase thật (nối BE-016)
+
+- Nguồn duy nhất: `specs/pb-server-map.json` (12 collections) + `specs/pb-merge-plan.md`
+  (§3 mapping, §4 lot, §5 checklist) + `specs/pocketbase-attendance.json`.
+  Mọi giả định BE-016 lấy từ file import cũ (`full_name`/`is_active` boolean/
+  role `admin`) đã SAI — sửa hết ở bản này.
+- `src/main/pb-client.ts` (viết lại mapping theo schema thật):
+  `PbUserRecord` = `email/username?/name/phone/role system_admin|parking_manager|
+  staff|customer/status active|inactive` (+ compat `is_active` cũ);
+  `pbRoleToLocal` (system_admin→admin, **parking_manager→admin** — app không có
+  role này, đọc như admin theo rules server, §5.3; guest→null) +
+  `localRoleToPb` (admin→system_admin, guest→null); enum maps P2 dùng ngay
+  (`parked`↔`parking`, `available`↔`empty`, reservation 5 trạng thái §3.8,
+  payment `card`→`bank_transfer`+note/`transfer`→`bank_transfer`/
+  `e_wallet`→`momo`); `PB_COLLECTIONS` (`spots`→`parking_spots`,
+  `sessions`→`parking_sessions`, `passes`→`monthly_passes`);
+  `pbLogin` check khóa bằng `status !== 'active'` (compat `is_active`),
+  chấp nhận login username HOẶC email (identityFields cả 2 — §2A);
+  `pbRegisterCustomer` payload đúng schema (`name`, `email`
+  placeholder `SĐT@lot.local` §2A, `role:'customer'`, `status:'active'`) —
+  LƯU Ý `users.createRule = role=system_admin` nên signup ẩn danh 403 cho tới
+  khi server nới rule (caller best-effort giữ local như cũ);
+  `requirePbParkingLot` (thiếu → `PbNoFallbackError` Việt) + `pbLotFilter`
+  (`parking_lot = "…"`, escape `"`) cho P2 list; `pbGetStatus` kèm `parking_lot`.
+- `src/main/app-config.ts` + `src/shared/types.ts`: `ParkingSettings.pb_parking_lot:
+  string | null` (default **null = local-only** tới khi user nhập; file cũ thiếu
+  key → null, KHÔNG đoán), validate ID `[A-Za-z0-9_-]{1,100}` + rỗng→null,
+  `getPbParkingLot(db)`; `PbStatus.parking_lot`; types server mới cho P2
+  (`PbServerRole`, `PbSpotStatus/SessionStatus/ReservationStatus/PaymentMethod/
+  PaymentStatus/VehicleType`); `AppConfigSetInput` nhận `pb_parking_lot`.
+- `src/main/auth.ts` (`upsertLocalMirrorFromPb`): role qua `pbRoleToLocal`
+  (resolve role_id bằng name như cũ); `name`→`full_name` (fallback username/
+  email); `status`→`is_active`; username = `rec.username || rec.email`.
+  **LOCAL-ONLY KHÔNG sync** (server không có cột — §5.7): `address`,
+  `start_date`, `permissions`, `notes` → update GIỮ NGUYÊN local, insert NULL.
+- `src/main/ipc-handlers.ts`: `pb:status` giữ guard `none`, thêm message Việt —
+  thiếu `pb_url` → hướng dẫn nhập địa chỉ; thiếu `parking_lot` → hướng dẫn
+  nhập ID bãi do `system_admin` cấp; đủ cả 2 → `ok(s)` không message.
+- Thứ tự PB→local/fallback, envelope `ok/fail`, raw-error bọc: giữ nguyên.
+  Không đụng renderer/schema SQLite/local-first.
+- PENDING user: xin `pb_parking_lot` id từ `system_admin` + gán `assigned_lots`
+  chứa lot cho user (login OK mà list P2 trống = 99% thiếu bước này — §4.4);
+  `monthly_passes.pending` + `users.username` đã có trên server (khỏi làm lại §2).
+- GHI CHÚ cho @frontend: `pb:status.data.parking_lot` (null → hiện banner +
+  màn nhập ID bãi ở Cấu hình); `app-config:set {pb_parking_lot}` đã admin-only
+  sẵn (validate field-level `errors.pb_parking_lot`).
+
+### Verification (BE-017)
+
+- `npx tsc --noEmit` → **pass**. `npm run build` → **pass**.
+  `vitest fee-calculator` → không đụng.
+- Không `console.log`; raw SDK error không lọt (đọc code + smoke).
+- Smoke runtime **pass** (system node, `dist` build, server live — READ-ONLY,
+  KHÔNG tạo user): 15 map assert (role 2 chiều, session/spot/reservation/
+  payment, collections, email placeholder, lot default null + require throw VI)
+  + `pbGetStatus` live `{online:true, mode:'local-first',
+  pb_url:'https://mqaue7.bot-keep.xyz', parking_lot:null}` + `pbTestConnection`
+  `{reachable:true}` + login sai user → `PB_AUTH_FALLBACK:400` (không lộ raw).
+- Chưa chạy: login PB **thành công** thật (cần user PB + password reset —
+  PENDING như BE-016) và nhánh mirror `name/status` live.
+- **Status: partially_verified** (types + mapping + config + IPC wiring +
+  smoke read-only live đều chạy thật; nhánh auth-success live chờ test account).

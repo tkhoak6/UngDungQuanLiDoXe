@@ -93,6 +93,10 @@ export function summarizeAgg(rows: DayAgg[]): { revenue: number; entries: number
 export const SETTINGS_KEY = 'parking.settings.v1';
 export const LAST_BACKUP_KEY = 'parking:last-backup-v1';
 
+// URL PocketBase online mặc định — mirror backend DEFAULT_PB_URL (BE-016).
+// Không hardcode ở component: mọi màn hình dùng hằng này.
+export const DEFAULT_PB_URL = 'https://mqaue7.bot-keep.xyz';
+
 export const DEFAULT_SETTINGS: ParkingSettings = {
   lot_name: 'Bãi giữ xe',
   address: null,
@@ -100,6 +104,8 @@ export const DEFAULT_SETTINGS: ParkingSettings = {
   logo_data_url: null,
   fee_grace_minutes: 30,
   fee_day_threshold_hours: 12,
+  pb_url: DEFAULT_PB_URL,
+  pb_parking_lot: null, // BE-017: null = chưa cấu hình = local-only
   updated_at: new Date().toISOString(),
 };
 

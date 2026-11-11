@@ -1,18 +1,59 @@
 # Bãi xe thông minh — Hệ quản lý đỗ xe client-server
 
-Hệ quản lý đỗ xe theo kiến trúc **client-server**: **client** gồm **app máy tính (Desktop)** tại quầy bãi xe và **app điện thoại (Mobile)** cho khách/nhân viên hiện trường, cùng kết nối về **server online trung tâm** (API + DB tập trung, đồng bộ 2 chiều). Offline vẫn chạy bình thường, có mạng thì đồng bộ lên server.
+Hệ quản lý đỗ xe theo kiến trúc **client-server**: **desktop (Windows)** tại quầy và **mobile (Android)** cho khách/nhân viên hiện trường cùng kết nối về **server PocketBase online** trung tâm. Mặc định chạy **local-first** (offline hoàn toàn); cấu hình server thì đăng nhập online trước, rớt mạng tự fallback về dữ liệu local.
 
 | Nền tảng | Vai trò | Trạng thái |
 |---|---|---|
-| 🖥️ Desktop (Electron, Windows) | **Client** tại quầy | ✅ Hoàn thành — đang chạy local-first (SQLite máy cục bộ); lộ trình nối lên server online để đồng bộ. |
-| 📱 Mobile (app điện thoại) | **Client** di động | 🔜 Lộ trình — khách check-in/out, xem chỗ trống thời gian thực, đặt chỗ trước; dùng chung contract `api-contract.md` với server. |
-| ☁️ Server online | **Server trung tâm** | 🔜 Lộ trình — API trung tâm + DB tập trung, đồng bộ 2 chiều với các client (offline vẫn chạy, có mạng đồng bộ sau). |
+| 🖥️ Desktop (Electron, Windows) | **Client** tại quầy | ✅ Hoàn thành — local-first (SQLite máy cục bộ) + đăng nhập online-first qua PocketBase (BE-016/BE-017, auth fallback local). |
+| 📱 Mobile (Flutter, Android) | **Client** di động | ✅ V1 hoàn thành — customer 5 tabs + staff 4 tabs, SQLite local mirror; bản APK ký release đã build, **chưa đăng lên GitHub Releases**. |
+| ☁️ Server PocketBase | **Server trung tâm** | ✅ Đang chạy — `https://mqaue7.bot-keep.xyz` (schema thật theo `specs/pb-server-map.json`; desktop nối auth, sync data P2). |
 
-> **Ghi chú trung thực:** hiện tại chỉ **Desktop client** đã hoàn thành và dùng được (local-first). Mobile và Server online là lộ trình, chưa có bản chạy được.
->
-> Phần còn lại của README này mô tả chi tiết **Desktop client**.
->
-> **Lộ trình kỹ thuật:** (1) Giữ SQLite local trên Desktop làm cache/offline store, thêm lớp sync đẩy/kéo về server khi có mạng. (2) Server online giữ DB tập trung làm nguồn chân lý (source of truth), xung đột giải quyết theo timestamp + quy tắc nghiệp vụ. (3) Mobile dùng chung contract `api-contract.md`, không truy cập DB trực tiếp. (4) Desktop hiện tại không cần sửa logic nghiệp vụ khi nối server — chỉ thêm adapter đồng bộ.
+> **Ghi chú trung thực:** desktop đã dùng được (cài từ installer bên dưới). Mobile V1 code xong + APK release đã build nhưng chưa có link tải công khai. Đồng bộ dữ liệu 2 chiều (sync) là P2; hiện tại server mới nối ở tầng đăng nhập.
+
+## Tải & cài đặt
+
+### Desktop Windows (khuyên dùng)
+
+1. Tải installer **`BaiXeThongMinh-Setup-0.1.0.exe`** (~87 MB) tại
+   [GitHub Releases — Bãi xe thông minh v0.1.0](https://github.com/tkhoak6/UngDungQuanLiDoXe/releases/tag/v0.1.0).
+2. Double-click → SmartScreen hiện "Unknown publisher" (app chưa ký số) → bấm **More info → Run anyway**.
+3. Cài per-user, **không cần quyền Admin**. Không cần Node.js, không cần mạng.
+4. Lần đầu mở app: DB tự tạo + seed tài khoản demo (xem bên dưới) — đăng nhập `admin` → **đổi mật khẩu NGAY**.
+
+Chi tiết cài/backup/gỡ/build lại: [`specs/distribution-guide.md`](specs/distribution-guide.md).
+
+### Mobile Android
+
+Chưa có file APK trên GitHub Releases. Hai cách lấy bản mobile:
+
+- **Liên hệ tác giả** để nhận file `app-release.apk` (bản release đã ký, ~58 MB, applicationId `vn.baixe.parkingmobile`).
+- **Tự build từ source** (cần Flutter SDK):
+
+```bash
+cd mobile
+flutter pub get
+flutter build apk --release
+# ra: mobile/build/app/outputs/flutter-apk/app-release.apk
+```
+
+Tài khoản demo mobile (seed local): customer `0901234567` / `customer123`, staff `staff01` / `staff123`, hoặc "Tiếp tục xem sơ đồ" (guest, không login). Chi tiết: [`mobile/README.md`](mobile/README.md), [`specs/mobile-app.md`](specs/mobile-app.md).
+
+## Kết nối máy chủ online (tùy chọn)
+
+Desktop chạy local-only nếu bỏ trống cấu hình. Để dùng đăng nhập online:
+
+1. Mở app desktop → **Quản lý → Cấu hình → section "Máy chủ PocketBase"**.
+2. Nhập **URL server** (mặc định `https://mqaue7.bot-keep.xyz`) và **Parking lot ID** —
+   xin ID từ `system_admin`, hoặc tự tra: mở PocketBase Admin → Collections → `parking_lots`
+   → mở dòng bãi của bạn → Copy ID dán vào ô.
+3. Bấm **Kiểm tra** (hiện độ trễ) rồi **Lưu**. Badge trạng thái hiện Online/Local.
+4. Để trống URL = quay về local-only.
+
+Hành vi đăng nhập (BE-016): **online trước** — thành công thì mirror về local (lần sau
+offline vẫn đăng nhập được); rớt mạng/sai pass/chưa có user trên server thì **fallback
+local**. Tài khoản bị khóa/sai vai trò thì không fallback. Đăng ký khách mới: tạo local
+trước, đồng bộ lên server best-effort (offline vẫn dùng được). Sync dữ liệu nghiệp vụ
+2 chiều là P2 — hiện tại giá/cấu hình bãi vẫn lấy từ local.
 
 ## App desktop (Windows) — đã hoàn thành
 
@@ -25,7 +66,7 @@ Giao diện enterprise data-dense (Ant-inspired, primary `#1677FF`), cửa sổ 
 **Admin (toàn quyền)**
 - Cấu hình khu vực / chỗ đỗ / giá giờ-ngày, bật-tắt khu.
 - Quản lý users + phân quyền chi tiết 5 flags (`checkin`, `pass_sale`, `report_self`, `profile_self`, `reservation`).
-- Báo cáo doanh thu, chi tiết giao dịch (M1), cấu hình bãi xe (M2: tên/logo/giá), backup/restore DB (M3).
+- Báo cáo doanh thu, chi tiết giao dịch (M1), cấu hình bãi xe (M2: tên/logo/giá/**máy chủ PocketBase**), backup/restore DB (M3).
 - Quản lý ca làm việc (shifts), xem chấm công, hiệu suất, nhật ký hoạt động.
 
 **Nhân viên**
@@ -43,6 +84,8 @@ Giao diện enterprise data-dense (Ant-inspired, primary `#1677FF`), cửa sổ 
 - Desktop: Electron 33 + `better-sqlite3` (local-first, WAL), IPC qua preload.
 - Frontend: React 18 + Vite 5 + TypeScript, icons `lucide-react`.
 - Backend logic: Node + better-sqlite3 transactions (check-out = update session + spot + insert payment trong 1 transaction).
+- Online: PocketBase JS SDK (`pocketbase@^0.28.2`, auth online-first + mirror local), server mặc định `https://mqaue7.bot-keep.xyz`.
+- Mobile: Flutter (single codebase), SQLite local mirror (sqflite), Riverpod + GoRouter.
 - Test: Vitest (fee-calculator 10 case), `tsc --noEmit` typecheck.
 - Đóng gói: electron-builder NSIS → `release/BaiXeThongMinh-Setup-<version>.exe`.
 
@@ -51,7 +94,7 @@ Giao diện enterprise data-dense (Ant-inspired, primary `#1677FF`), cửa sổ 
 - Windows 10/11 64-bit.
 - Node.js 20 (đúng ABI Electron 33 — xem `specs/run-report.md`; Node 24 hệ thống bị lệch ABI).
 - VS Build Tools workload "Desktop development with C++" (1 lần, để biên dịch `better-sqlite3`).
-- Không cần mạng khi chạy app đã cài.
+- Không cần mạng khi chạy app đã cài (trừ khi dùng đăng nhập online).
 
 ## Chạy dev
 
@@ -116,11 +159,13 @@ D:\DA\
   start-app.bat        Mở app dev (double-click)
   package.json         Scripts dev/build/dist + config electron-builder
   src/
-    main/              Electron main + IPC + SQLite (fee-calculator, backup job)
+    main/              Electron main + IPC + SQLite + PocketBase client (fee-calculator, backup job)
     preload/           Bridge IPC an toàn
     renderer/          React UI (sidebar 240px + topbar 56px)
     shared/            Types + contract dùng chung
+  mobile/              App Flutter (Android/iOS): lib/, android/, test/
   specs/*.sql          Schema + seed + migration 002→007
+  specs/pb-*.json      Schema + mapping server PocketBase
   build/               icon.ico/icon.png (chữ P trên #1677FF)
   release/             Installer .exe + win-unpacked
   data/                parking.db dev (không commit)
@@ -130,6 +175,10 @@ D:\DA\
 
 - Cài đặt / backup / gỡ / build lại: [`specs/distribution-guide.md`](specs/distribution-guide.md)
 - Mở app dev (launcher): [`specs/launcher-guide.md`](specs/launcher-guide.md)
+- Server PocketBase (import + vận hành): [`specs/pocketbase-guide.md`](specs/pocketbase-guide.md)
+- Gộp an toàn với server thật (mapping entity): [`specs/pb-merge-plan.md`](specs/pb-merge-plan.md)
+- Backend + auth online (BE-016/BE-017): [`specs/backend-summary.md`](specs/backend-summary.md)
+- Mobile (UX spec + summary): [`specs/mobile-app.md`](specs/mobile-app.md), [`mobile/README.md`](mobile/README.md)
 - API + schema + ma trận quyền: [`api-contract.md`](api-contract.md)
 - Design tokens + mapping trạng thái: [`DESIGN.md`](DESIGN.md)
 - Spec nghiệp vụ gốc: [`specs/parking-app.md`](specs/parking-app.md)

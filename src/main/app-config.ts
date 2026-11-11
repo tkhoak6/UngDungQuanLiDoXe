@@ -32,6 +32,9 @@ export const DEFAULT_SETTINGS: Omit<ParkingSettings, 'updated_at'> = {
   fee_grace_minutes: 30,
   fee_day_threshold_hours: 12,
   pb_url: DEFAULT_PB_URL,
+  // BE-017: null = chưa cấu hình = local-only cho tới khi user nhập ID bãi
+  // (merge-plan §4 — server bắt buộc parking_lot ở mọi create/filter).
+  pb_parking_lot: null,
 };
 
 /** Config lives next to the DB file (dev: ./data, packaged: userData). */
@@ -57,6 +60,12 @@ function withDefaults(raw: unknown): ParkingSettings {
     // BE-016: file cũ thiếu key (undefined) → default URL; null/rỗng đã lưu → giữ
     // local-only (không tự nhảy về default để tôn trọng lựa chọn của admin).
     pb_url: r.pb_url === undefined ? DEFAULT_PB_URL : normalizePbUrl(r.pb_url),
+    // BE-017: file cũ thiếu key → null (local-only cho tới khi user cấu hình).
+    // Chuỗi rỗng/không hợp lệ trong file tay sửa → null (không throw).
+    pb_parking_lot:
+      typeof r.pb_parking_lot === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(r.pb_parking_lot.trim())
+        ? r.pb_parking_lot.trim()
+        : null,
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : new Date().toISOString(),
   };
 }
@@ -80,6 +89,7 @@ export interface ConfigPatch {
   fee_grace_minutes?: unknown;
   fee_day_threshold_hours?: unknown;
   pb_url?: unknown; // BE-016: string http(s) URL hoặc null (local-only)
+  pb_parking_lot?: unknown; // BE-017: string ID bãi server hoặc null (chưa cấu hình)
 }
 
 /**
@@ -91,7 +101,7 @@ export function validateParkingPatch(
   patch: ConfigPatch,
 ): Pick<
   ParkingSettings,
-  'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url'
+  'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url' | 'pb_parking_lot'
 > {
   const errors: Record<string, string[]> = {};
   const out: Record<string, unknown> = {};
@@ -171,6 +181,23 @@ export function validateParkingPatch(
     }
   }
 
+  // BE-017: ID bãi server (parking_lots). null/rỗng = chưa cấu hình = local-only
+  // (không thử online). Xin id từ system_admin (merge-plan §4).
+  if (patch.pb_parking_lot !== undefined) {
+    if (patch.pb_parking_lot === null) {
+      out.pb_parking_lot = null;
+    } else {
+      const t = typeof patch.pb_parking_lot === 'string' ? patch.pb_parking_lot.trim() : '';
+      if (!t) {
+        out.pb_parking_lot = null;
+      } else if (t.length > 100 || !/^[A-Za-z0-9_-]+$/.test(t)) {
+        errors.pb_parking_lot = ['Mã bãi xe không hợp lệ — nhập ID bãi do system_admin cấp (VD: pbc_…).'];
+      } else {
+        out.pb_parking_lot = t;
+      }
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     const err = new Error('Dữ liệu cấu hình không hợp lệ');
     (err as unknown as { errors: Record<string, string[]> }).errors = errors;
@@ -218,5 +245,20 @@ export function getPbBaseUrl(db: AppDb): string | null {
     return u ? u : null;
   } catch {
     return DEFAULT_PB_URL;
+  }
+}
+
+/**
+ * ID bãi server hiệu dụng (BE-017 — merge-plan §4).
+ * - Mọi create/filter PB PHẢI gắn kèm (server bắt buộc `parking_lot*`).
+ * - null = chưa cấu hình = local-only (caller hiện message Việt hướng dẫn nhập).
+ */
+export function getPbParkingLot(db: AppDb): string | null {
+  try {
+    const s = loadParkingSettings(db);
+    const v = typeof s.pb_parking_lot === 'string' ? s.pb_parking_lot.trim() : '';
+    return v ? v : null;
+  } catch {
+    return null;
   }
 }

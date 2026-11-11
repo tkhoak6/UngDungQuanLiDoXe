@@ -541,6 +541,10 @@ export interface ParkingSettings {
   logo_data_url: string | null; // PNG/JPG dataURL ≤ 512KB
   fee_grace_minutes: number; // default 30, int 0–120
   fee_day_threshold_hours: number; // default 12, int 1–24
+  pb_url: string | null; // BE-016: URL máy chủ PocketBase; null = local-only
+  // (không thử online). File cũ thiếu → mặc định DEFAULT_PB_URL (lib/management).
+  pb_parking_lot: string | null; // BE-017: id bãi server (parking_lots) — null
+  // = chưa cấu hình = local-only (không thử online). Xin id từ system_admin.
   updated_at: string; // ISO8601 (IPC set)
 }
 
@@ -548,9 +552,31 @@ export interface AppConfigSetInput {
   patch: Partial<
     Pick<
       ParkingSettings,
-      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours'
+      'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url' | 'pb_parking_lot'
     >
   >;
+}
+
+// ---- PocketBase online (nối BE-016 auth + BE-017 schema thật, mirrors
+// src/shared/types.ts). V1 local-first: `online` chỉ phản ánh ping gần nhất.
+export type PbMode = 'local-first' | 'online';
+
+export interface PbStatus {
+  online: boolean; // ping /api/health OK trong timeout
+  mode: PbMode; // V1 luôn 'local-first'
+  pb_url: string; // '' khi chưa cấu hình (local-only)
+  latency_ms: number | null;
+  parking_lot: string | null; // BE-017: id bãi server đang dùng; null = chưa cấu hình
+}
+
+export interface PbTestInput {
+  url?: string; // override tạm để test (không lưu); undefined → dùng URL đã cấu hình
+}
+
+export interface PbTestResult {
+  reachable: boolean;
+  pb_url: string;
+  latency_ms: number | null;
 }
 
 // ---- Management area M3 (spec ./specs/management-area.md §M3.2, nối BE-015) ----

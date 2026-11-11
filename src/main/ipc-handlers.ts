@@ -310,14 +310,26 @@ export function registerIpcHandlers(db: AppDb): void {
     );
   });
 
-  // ---- PocketBase online (BE-016: auth trước, data sync để P2) ----
+  // ---- PocketBase online (BE-016 auth + BE-017 schema thật/parking_lot) ----
   register(db, 'pb:test', 'admin', async (d, input) => {
     const r = await pbTestConnection(d, input?.url);
     return r.reachable
       ? ok(r, `Kết nối máy chủ online OK (${r.latency_ms ?? '?'}ms).`)
       : ok(r, 'Không kết nối được máy chủ online — kiểm tra địa chỉ/mạng.');
   });
-  register(db, 'pb:status', 'none', async (d) => ok(await pbGetStatus(d)));
+  // BE-017: kèm parking_lot đang dùng; thiếu config → message Việt hướng dẫn
+  // nhập (UI có màn nhập Cấu hình sau — handler không tự đoán bãi).
+  register(db, 'pb:status', 'none', async (d) => {
+    const s = await pbGetStatus(d);
+    if (!s.pb_url) return ok(s, 'Chưa cấu hình máy chủ online — vào Cấu hình để nhập địa chỉ.');
+    if (!s.parking_lot) {
+      return ok(
+        s,
+        'Chưa cấu hình bãi xe (mã parking_lot) — vào Cấu hình nhập ID bãi do system_admin cấp để đồng bộ online.',
+      );
+    }
+    return ok(s);
+  });
 
   // ---- zones ----
   register(db, 'zones:list', 'none', (d) =>

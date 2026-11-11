@@ -359,6 +359,8 @@ let mockSettings: ParkingSettings = {
   logo_data_url: null,
   fee_grace_minutes: 30,
   fee_day_threshold_hours: 12,
+  pb_url: 'https://mqaue7.bot-keep.xyz', // BE-016 default (browser dev vẫn local-only)
+  pb_parking_lot: null, // BE-017: null = chưa cấu hình = local-only
   updated_at: '2026-10-24T08:00:00Z',
 };
 
@@ -1410,9 +1412,66 @@ export const mockApi: RendererApi = {
     if (next.fee_day_threshold_hours * 60 <= next.fee_grace_minutes) {
       return { ok: false, error: 'Ngưỡng ngày phải lớn hơn thời gian tối thiểu.' };
     }
+    // FE-022 mock `pb_url`/`pb_parking_lot` (mirror BE-016/BE-017 validate):
+    // URL http(s) + host có dấu chấm, ≤500 ký tự, strip trailing slash,
+    // rỗng/null → local-only; lot ID [A-Za-z0-9_-]{1,100}, rỗng/null → null.
+    if (patch.pb_url !== undefined) {
+      if (patch.pb_url === null) {
+        next.pb_url = null;
+      } else {
+        const t = patch.pb_url.trim().replace(/\/+$/, '');
+        if (!t) {
+          next.pb_url = null;
+        } else if (t.length > 500 || !/^https?:\/\/.+\..+/.test(t)) {
+          return { ok: false, error: 'Địa chỉ máy chủ phải bắt đầu bằng http(s)://.', fields: { pb_url: 'Địa chỉ máy chủ phải bắt đầu bằng http(s)://.' } };
+        } else {
+          next.pb_url = t;
+        }
+      }
+    }
+    if (patch.pb_parking_lot !== undefined) {
+      if (patch.pb_parking_lot === null) {
+        next.pb_parking_lot = null;
+      } else {
+        const t = patch.pb_parking_lot.trim();
+        if (!t) {
+          next.pb_parking_lot = null;
+        } else if (t.length > 100 || !/^[A-Za-z0-9_-]+$/.test(t)) {
+          return { ok: false, error: 'Mã bãi chỉ gồm chữ/số/gạch (tối đa 100 ký tự).', fields: { pb_parking_lot: 'Mã bãi chỉ gồm chữ/số/gạch (tối đa 100 ký tự).' } };
+        } else {
+          next.pb_parking_lot = t;
+        }
+      }
+    }
     next.updated_at = mockNowStamp().replace(' ', 'T') + 'Z';
     mockSettings = next;
     return { ok: true, data: { ...next } };
+  },
+
+  // FE-022 mock `pb:status` + `pb:test` (mirror BE-016/BE-017).
+  // Browser dev không ping được server thật → status luôn local-only
+  // (online:false); test chỉ validate định dạng URL, không lưu.
+  async pbStatus() {
+    await delay(200);
+    return {
+      ok: true,
+      data: {
+        online: false,
+        mode: 'local-first' as const,
+        pb_url: mockSettings.pb_url ?? '',
+        latency_ms: null,
+        parking_lot: mockSettings.pb_parking_lot,
+      },
+    };
+  },
+
+  async testPbConnection(url?: string) {
+    await delay(600);
+    const target = (url ?? mockSettings.pb_url ?? '').trim().replace(/\/+$/, '');
+    if (!target || target.length > 500 || !/^https?:\/\/.+\..+/.test(target)) {
+      return { ok: true, data: { reachable: false, pb_url: target, latency_ms: null } };
+    }
+    return { ok: true, data: { reachable: true, pb_url: target, latency_ms: 180 } };
   },
 
   // FE-021 M3 mock `backup:now` (mirror BE-015): trả path + size giả

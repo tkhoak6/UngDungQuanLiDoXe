@@ -39,6 +39,8 @@ import type {
   ParkingZone,
   PassConfirmInput,
   PaymentMethod,
+  PbStatus,
+  PbTestResult,
   Reservation,
   RestoreFromFileInput,
   RestoreFromFileOutput,
@@ -169,6 +171,11 @@ export interface RendererApi {
   // Logo KHÔNG nhận binary từ renderer — dataURL PNG/JPG ≤512KB.
   getAppConfig(): Promise<ApiResult<ParkingSettings>>;
   setAppConfig(patch: AppConfigSetInput['patch']): Promise<ApiResult<ParkingSettings>>;
+  // PocketBase online (nối BE-016 `pb:test` + BE-017 `pb:status`): test tạm
+  // (KHÔNG lưu URL — lưu qua setAppConfig {pb_url}) + badge trạng thái.
+  // `pb:status` guard none để render badge offline; `pb:test` admin-only.
+  pbStatus(): Promise<ApiResult<PbStatus>>;
+  testPbConnection(url?: string): Promise<ApiResult<PbTestResult>>;
   // Management area M3 (nối BE-015 backup/restore, admin-only):
   // backup: save-dialog ở main khi thiếu dest_path. restore: open-dialog ở
   // main khi thiếu source_path (KHÔNG gửi binary từ renderer) → needRestart.
@@ -650,6 +657,17 @@ const backendApi: RendererApi = {
   async restoreFromFile(input) {
     const res = await (getBridge() as InvokeBridge).invoke('restore:from-file', input ?? {});
     return toResult(res);
+  },
+
+  // FE-022 (nối BE-016/BE-017): trạng thái + kiểm tra máy chủ PocketBase.
+  async pbStatus() {
+    const res = await (getBridge() as InvokeBridge).invoke('pb:status', undefined);
+    return toResult<PbStatus>(res);
+  },
+
+  async testPbConnection(url?: string) {
+    const res = await (getBridge() as InvokeBridge).invoke('pb:test', url ? { url } : {});
+    return toResult<PbTestResult>(res);
   },
 
   async recentActivity(limit) {
