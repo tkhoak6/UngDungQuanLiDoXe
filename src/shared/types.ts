@@ -223,6 +223,10 @@ export interface CheckOutInput {
   ticket_code: string;
   discount_amount?: number;
   payment_method: PaymentMethod;
+  // BE-018 (qr-anpr.md §1.1B): quét QR thay gõ tay — verify SIG → resolve
+  // ticket_code rồi chạy luồng check-out cũ. Gửi kèm hay thay ticket_code
+  // đều được (trống + không có qr_payload → lỗi như cũ).
+  qr_payload?: string;
 }
 
 export interface FeePreview {
@@ -620,6 +624,11 @@ export interface ParkingSettings {
   pb_parking_lot: string | null; // BE-017: id bãi server (parking_lots) — MỌI
   // create/filter PB PHẢI gắn kèm (server bắt buộc). null = chưa cấu hình =
   // local-only (không thử online). Xin id từ system_admin.
+  qr_hmac_key_b64: string | null; // BE-018 (qr-anpr.md §1.2): key HMAC-SHA256
+  // 256-bit ký vé QR, base64 — lưu cùng app-config.json, KHÔNG hardcode,
+  // KHÔNG log, KHÔNG trả cho client ngoài `auth:qr-key`. null = chưa sinh
+  // (sinh lười ở ensureQrHmacKey). Backup/restore .db + app-config.json đi cùng nhau.
+  qr_key_id: number; // BE-018: V1 luôn 1 (rotation sang P2 — payload `P2.<key_id>…`)
   updated_at: string; // ISO8601 (IPC set)
 }
 
@@ -653,6 +662,41 @@ export interface RestoreFromFileOutput {
   backup_path: string; // auto-backup DB hiện tại (pre-restore-TIMESTAMP.db)
   restored_at: string; // sqlite datetime('now') lúc validate xong
   needRestart: true; // app PHẢI restart để mở lại DB mới
+}
+
+// ---- Vé QR ký HMAC (spec ./specs/qr-anpr.md §1.2 — BE-018 V1a) ----
+// Format: P1.<ticket_code>.<PLATE_NORM>.<IN_TS>.<SIG> (SIG = base64url
+// HMAC-SHA256 của 3 field đầu). Key 256-bit ở app-config.json; device lấy
+// qua `auth:qr-key` (staff đã login) vào secure storage, verify offline được.
+// Chống dùng lại bằng DB status (completed quét lại → USED), không bằng QR.
+
+export interface QrKeyOutput {
+  key_b64: string; // base64 key 256-bit (device lưu secure storage, KHÔNG plain prefs)
+  key_id: number; // V1 luôn 1
+}
+
+export interface QrPayloadOutput {
+  qr_text: string; // chuỗi QR text ký xong (render bằng qr_flutter, ECC M)
+  ticket_code: string;
+  license_plate: string; // biển số chuẩn hóa trong QR (UPPERCASE, không -/./space)
+  check_in_at: string;
+}
+
+export type QrVerifyReason =
+  | 'INVALID_FORMAT' // sai format/version/ticket/plate/ts
+  | 'UNSUPPORTED_VERSION' // version lạ → "cập nhật app"
+  | 'INVALID_SIGNATURE' // SIG sai → "có thể vé giả"
+  | 'NOT_FOUND' // SIG đúng nhưng vé không tồn tại
+  | 'PLATE_MISMATCH' // SIG đúng nhưng biển trong QR khác DB (vé bị sửa tay)
+  | 'ALREADY_USED' // vé đã check-out/hủy → "đã sử dụng lúc HH:mm"
+  | 'NO_KEY'; // server chưa có key (lỗi nội bộ)
+
+export interface QrVerifyOutput {
+  valid: boolean;
+  reason?: QrVerifyReason;
+  message?: string; // câu tiếng Việt render trực tiếp (inline banner)
+  session?: ParkingSession;
+  fee_preview?: FeePreview | null; // valid + parked → kèm preview phí lúc quét
 }
 
 /** Channel -> { input, output } map. Preload + renderer use this for typing. */
@@ -768,6 +812,9 @@ export interface ApiMap {
   'pb:status': { input: void; output: IpcResult<PbStatus> };
   'backup:now': { input: BackupNowInput; output: IpcResult<BackupNowOutput> };
   'restore:from-file': { input: RestoreFromFileInput; output: IpcResult<RestoreFromFileOutput> };
+  'auth:qr-key': { input: void; output: IpcResult<QrKeyOutput> };
+  'tickets:qr-payload': { input: { ticket_code: string }; output: IpcResult<QrPayloadOutput> };
+  'tickets:verify-qr': { input: { qr_text: string }; output: IpcResult<QrVerifyOutput> };
 }
 
 export type IpcChannel = keyof ApiMap;

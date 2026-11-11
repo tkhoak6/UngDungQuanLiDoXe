@@ -33,6 +33,39 @@ FROM vehicles v WHERE v.owner_phone = ? ORDER BY v.license_plate
         .toList();
   }
 
+  /// Vé đang đỗ của khách (mine-only theo owner_phone) — render QR vé
+  /// (MO-009 V1a, spec §1.1C). Vé đã check-out KHÔNG trả về ở đây nên
+  /// không bao giờ vẽ QR vé cũ.
+  Future<List<SessionRow>> myParkedSessions(String phone) async {
+    final d = await _db.db;
+    final rows = await d.rawQuery('''
+SELECT ps.id, ps.ticket_code, v.license_plate, z.code AS zone_code,
+  ps.check_in_at, ps.check_out_at, ps.total_fee, ps.monthly_pass_id,
+  ps.status, ps.hourly_rate_applied, ps.daily_rate_applied, ps.qr_text
+FROM parking_sessions ps
+JOIN vehicles v ON v.id = ps.vehicle_id
+JOIN parking_zones z ON z.id = ps.zone_id
+WHERE ps.status = 'parked' AND v.owner_phone = ?
+ORDER BY ps.check_in_at DESC
+''', [phone]);
+    return rows
+        .map((r) => SessionRow(
+              id: r['id'] as int,
+              ticketCode: r['ticket_code'] as String,
+              licensePlate: r['license_plate'] as String,
+              zoneCode: r['zone_code'] as String,
+              checkInAt: r['check_in_at'] as String,
+              checkOutAt: r['check_out_at'] as String?,
+              totalFee: r['total_fee'] as int?,
+              isMonthly: r['monthly_pass_id'] != null,
+              status: r['status'] as String,
+              hourlyRate: r['hourly_rate_applied'] as int,
+              dailyRate: r['daily_rate_applied'] as int,
+              qrText: r['qr_text'] as String?,
+            ))
+        .toList();
+  }
+
   Future<List<SessionRow>> mySessions(
     String phone, {
     String? from,

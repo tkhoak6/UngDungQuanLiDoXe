@@ -605,3 +605,42 @@ export interface PbTestResult { reachable: boolean; pb_url: string; latency_ms: 
   (validate/trùng như §12), rồi best-effort tạo user PB (role `'customer'`
   cố định); PB fail → vẫn thành công local + message "chưa đồng bộ online".
 - `ParkingSettings` thêm `pb_url` (xem §15 M2 — cùng validate/set flow).
+
+---
+
+## 17. Vé QR ký HMAC (spec `./specs/qr-anpr.md` §1.2–§1.3, BE-018 V1a — desktop ký/verify, mobile quét)
+
+```ts
+// Format QR text: P1.<ticket_code>.<PLATE_NORM>.<IN_TS>.<SIG>
+// P1 = version; PLATE_NORM = UPPERCASE bỏ ngoài [A-Z0-9]; IN_TS = epoch phút;
+// SIG = base64url(HMAC-SHA256(key, "P1.<ticket>.<plate>.<ts>")) (43 ký tự).
+// Key 256-bit sinh 1 lần, lưu app-config.json `qr_hmac_key_b64` (KHÔNG hardcode/log).
+
+// Device lấy key 1 lần sau login (staff) → secure storage, verify offline được.
+// Chống dùng lại bằng DB status (completed → ALREADY_USED), không bằng QR.
+export interface QrKeyOutput {
+  key_b64: string; // base64 key 256-bit
+  key_id: number; // V1 luôn 1
+}
+export interface QrPayloadOutput {
+  qr_text: string; // render bằng qr_flutter (ECC M, nền trắng, ≥160dp)
+  ticket_code: string;
+  license_plate: string; // đã chuẩn hóa trong QR
+  check_in_at: string;
+}
+export type QrVerifyReason =
+  | 'INVALID_FORMAT' | 'UNSUPPORTED_VERSION' | 'INVALID_SIGNATURE'
+  | 'NOT_FOUND' | 'PLATE_MISMATCH' | 'ALREADY_USED' | 'NO_KEY';
+export interface QrVerifyOutput {
+  valid: boolean;
+  reason?: QrVerifyReason;
+  message?: string; // tiếng Việt render trực tiếp (inline banner)
+  session?: ParkingSession;
+  fee_preview?: FeePreview | null; // valid + parked → kèm preview phí
+}
+// auth:qr-key void → {QrKeyOutput} (staff — đã login mới gọi được)
+// tickets:qr-payload {ticket_code} → {QrPayloadOutput} (staff+checkin — backend ký)
+// tickets:verify-qr {qr_text} → {QrVerifyOutput} (staff+checkin — SIG + status + preview)
+// sessions:check-out CheckInInput thêm `qr_payload?` optional (verify → resolve
+// ticket_code → chạy transaction cũ; lệch với ticket_code tay → lỗi)
+```

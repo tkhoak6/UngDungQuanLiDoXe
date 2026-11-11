@@ -14,6 +14,12 @@ import { AppError, getCurrentUser, hashPassword, loginOnlineFirst, logout, refre
 import { pbGetStatus, PbNoFallbackError, pbTestConnection } from './pb-client';
 import { calculateFee, calculatePassPrice } from './fee-calculator';
 import {
+  ensureQrHmacKey,
+  normalizePlateForQr,
+  signTicket,
+  verifyQrSignature,
+} from './qr-ticket';
+import {
   fail,
   ok,
   type ActivityAction,
@@ -48,6 +54,8 @@ import {
   type ParkingSession,
   type ParkingSpot,
   type ParkingZone,
+  type QrPayloadOutput,
+  type QrVerifyOutput,
   type PassConfirmInput,
   type PassConfirmOutput,
   type PassStatus,
@@ -583,6 +591,8 @@ export function registerIpcHandlers(db: AppDb): void {
   });
 
   // ---- sessions: check-out = ONE transaction (UPDATE session + UPDATE spot + INSERT payment) ----
+  // BE-018 (qr-anpr.md §1.1B): chấp nhận `qr_payload?` thay cho nhập tay —
+  // verify SIG → resolve ticket_code → chạy luồng check-out cũ bên dưới.
   register(db, 'sessions:check-out', 'staff', (d, input) => {
     const me = requireRole('staff');
     requirePerm(d, 'checkin');
@@ -592,9 +602,27 @@ export function registerIpcHandlers(db: AppDb): void {
     if (!allowedMethods.includes(input.payment_method)) {
       throw new AppError('Hình thức thanh toán không hợp lệ (tiền mặt / chuyển khoản / thẻ / ví điện tử)');
     }
+    // QR resolve (không đổi luồng cũ — chỉ suy ra ticket_code trước khi vào transaction):
+    let ticketCode = (input.ticket_code ?? '').trim();
+    const qrText = (input.qr_payload ?? '').trim();
+    if (qrText) {
+      const key = ensureQrHmacKey(d);
+      const v = verifyQrSignature(qrText, key.keyB64);
+      if (!v.ok) {
+        if (v.reason === 'UNSUPPORTED_VERSION') {
+          throw new AppError('Mã QR phiên bản mới — cập nhật app để quét vé này');
+        }
+        throw new AppError('Mã không hợp lệ — có thể vé giả hoặc chụp nhầm');
+      }
+      if (ticketCode && ticketCode !== v.payload.ticketCode) {
+        throw new AppError(`Mã QR (${v.payload.ticketCode}) không khớp mã vé đã nhập (${ticketCode})`);
+      }
+      ticketCode = v.payload.ticketCode;
+    }
+    if (!ticketCode) throw new AppError('Mã vé là bắt buộc (nhập tay hoặc quét QR)');
     const discount = Math.max(0, Math.floor(input.discount_amount ?? 0));
     const pay = d.transaction(() => {
-      const s = d.prepare(`SELECT * FROM parking_sessions WHERE ticket_code = ?`).get(input.ticket_code) as ParkingSession | undefined;
+      const s = d.prepare(`SELECT * FROM parking_sessions WHERE ticket_code = ?`).get(ticketCode) as ParkingSession | undefined;
       if (!s) throw new AppError('Không tìm thấy vé');
       if (s.status !== 'parked') throw new AppError('Vé đã được check-out');
       const fee = preview(d, s.ticket_code, discount);
@@ -617,6 +645,95 @@ export function registerIpcHandlers(db: AppDb): void {
       return { session, payment };
     });
     return ok(pay());
+  });
+
+  // ---- vé QR ký HMAC (spec ./specs/qr-anpr.md §1.2–§1.3 — BE-018 V1a) ----
+  //  - `auth:qr-key`: staff đã login lấy key 256-bit (sinh lười lần đầu,
+  //    lưu app-config.json) → device cất secure storage, verify offline.
+  //    Guard staff (admin cũng qua được — register 'staff' = admin OR staff).
+  //  - `tickets:qr-payload`: backend ký (frontend/mobile KHÔNG tự ký) —
+  //    dùng ở success sheet check-in + tab Vé khách.
+  //  - `tickets:verify-qr`: online verify SIG + đối soát `status='parked'` +
+  //    trả fee preview (máy offline tự check SIG bằng key + ghi pending_sync,
+  //    khi online gọi lại kênh này để đối soát — vé đã dùng → NEED_REVIEW ở app).
+  register(db, 'auth:qr-key', 'staff', (d) => {
+    requireRole('staff');
+    const { keyB64, keyId } = ensureQrHmacKey(d);
+    // KHÔNG log key (security-review §8) — chỉ trả về qua kênh đã đăng nhập.
+    return ok({ key_b64: keyB64, key_id: keyId });
+  });
+
+  register(db, 'tickets:qr-payload', 'staff', (d, input) => {
+    requireRole('staff');
+    requirePerm(d, 'checkin');
+    const code = (input.ticket_code ?? '').trim();
+    if (!code) throw new AppError('Mã vé là bắt buộc');
+    const row = d
+      .prepare(
+        `SELECT ps.ticket_code AS ticket_code, v.license_plate AS license_plate, ps.check_in_at AS check_in_at
+         FROM parking_sessions ps JOIN vehicles v ON v.id = ps.vehicle_id
+         WHERE ps.ticket_code = ?`,
+      )
+      .get(code) as { ticket_code: string; license_plate: string; check_in_at: string } | undefined;
+    if (!row) throw new AppError('Không tìm thấy vé');
+    const { keyB64 } = ensureQrHmacKey(d);
+    const qrText = signTicket({
+      ticketCode: row.ticket_code,
+      licensePlate: row.license_plate,
+      checkInAt: row.check_in_at,
+      keyB64,
+    });
+    return ok({
+      qr_text: qrText,
+      ticket_code: row.ticket_code,
+      license_plate: normalizePlateForQr(row.license_plate),
+      check_in_at: row.check_in_at,
+    } satisfies QrPayloadOutput);
+  });
+
+  register(db, 'tickets:verify-qr', 'staff', (d, input) => {
+    requireRole('staff');
+    requirePerm(d, 'checkin');
+    const qrText = (input.qr_text ?? '').trim();
+    if (!qrText) throw new AppError('Mã QR là bắt buộc');
+    const { keyB64 } = ensureQrHmacKey(d);
+    const v = verifyQrSignature(qrText, keyB64);
+    if (!v.ok) {
+      const message =
+        v.reason === 'UNSUPPORTED_VERSION'
+          ? 'Mã phiên bản mới — cập nhật app để quét vé này'
+          : 'Mã không hợp lệ — có thể vé giả hoặc chụp nhầm.';
+      return ok({ valid: false, reason: v.reason, message } satisfies QrVerifyOutput);
+    }
+    const s = d.prepare(`SELECT * FROM parking_sessions WHERE ticket_code = ?`).get(v.payload.ticketCode) as ParkingSession | undefined;
+    if (!s) {
+      return ok({ valid: false, reason: 'NOT_FOUND', message: 'Không tìm thấy vé — kiểm tra lại mã.' } satisfies QrVerifyOutput);
+    }
+    if (s.status !== 'parked') {
+      const when = (s.check_out_at ?? '').slice(0, 16).replace('T', ' ');
+      return ok({
+        valid: false,
+        reason: 'ALREADY_USED',
+        message: `Vé ${s.ticket_code} đã sử dụng${when ? ` lúc ${when}` : ''}.`,
+        session: s,
+      } satisfies QrVerifyOutput);
+    }
+    // Đối soát biển số: SIG đúng nhưng biển DB khác QR (vé bị sửa tay sau ký).
+    const veh = d.prepare(`SELECT license_plate FROM vehicles WHERE id = ?`).get(s.vehicle_id) as { license_plate: string } | undefined;
+    if (veh && normalizePlateForQr(veh.license_plate) !== v.payload.plateNorm) {
+      return ok({
+        valid: false,
+        reason: 'PLATE_MISMATCH',
+        message: `Biển số trên vé (${v.payload.plateNorm}) không khớp hồ sơ xe — vui lòng đối soát tại quầy.`,
+        session: s,
+      } satisfies QrVerifyOutput);
+    }
+    return ok({
+      valid: true,
+      message: `Vé ${s.ticket_code} hợp lệ — kiểm tra phí rồi thu.`,
+      session: s,
+      fee_preview: preview(d, s.ticket_code, 0),
+    } satisfies QrVerifyOutput);
   });
 
   register(db, 'sessions:active', 'staff', (d, input) => {

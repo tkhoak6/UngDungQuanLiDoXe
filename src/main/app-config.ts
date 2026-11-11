@@ -35,6 +35,11 @@ export const DEFAULT_SETTINGS: Omit<ParkingSettings, 'updated_at'> = {
   // BE-017: null = chưa cấu hình = local-only cho tới khi user nhập ID bãi
   // (merge-plan §4 — server bắt buộc parking_lot ở mọi create/filter).
   pb_parking_lot: null,
+  // BE-018 (qr-anpr.md §1.2): key HMAC-SHA256 256-bit ký vé QR, base64 chuẩn.
+  // null = chưa sinh (sinh lười ở ensureQrHmacKey lúc ký/cấp key lần đầu).
+  // KHÔNG hardcode, KHÔNG log, KHÔNG trả cho client ngoài `auth:qr-key`.
+  qr_hmac_key_b64: null,
+  qr_key_id: 1,
 };
 
 /** Config lives next to the DB file (dev: ./data, packaged: userData). */
@@ -66,6 +71,14 @@ function withDefaults(raw: unknown): ParkingSettings {
       typeof r.pb_parking_lot === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(r.pb_parking_lot.trim())
         ? r.pb_parking_lot.trim()
         : null,
+    // BE-018: key ký QR — giữ nguyên chuỗi base64 đã lưu (null khi chưa sinh).
+    // Validate độ dài thật ở ensureQrHmacKey/readQrHmacKey (qr-ticket.ts),
+    // ở đây chỉ loại chuỗi rỗng/không phải base64 (không throw để fee preview không vỡ).
+    qr_hmac_key_b64:
+      typeof r.qr_hmac_key_b64 === 'string' && /^[A-Za-z0-9+/=_-]{40,60}$/.test(r.qr_hmac_key_b64.trim())
+        ? r.qr_hmac_key_b64.trim()
+        : null,
+    qr_key_id: r.qr_key_id === 1 ? 1 : 1, // V1: 1 key duy nhất (rotation để P2 — qr-anpr.md §1.2)
     updated_at: typeof r.updated_at === 'string' && r.updated_at ? r.updated_at : new Date().toISOString(),
   };
 }
@@ -90,6 +103,7 @@ export interface ConfigPatch {
   fee_day_threshold_hours?: unknown;
   pb_url?: unknown; // BE-016: string http(s) URL hoặc null (local-only)
   pb_parking_lot?: unknown; // BE-017: string ID bãi server hoặc null (chưa cấu hình)
+  qr_hmac_key_b64?: unknown; // BE-018: base64 key 256-bit (chỉ nội bộ ensureQrHmacKey dùng)
 }
 
 /**
@@ -101,7 +115,15 @@ export function validateParkingPatch(
   patch: ConfigPatch,
 ): Pick<
   ParkingSettings,
-  'lot_name' | 'address' | 'phone' | 'logo_data_url' | 'fee_grace_minutes' | 'fee_day_threshold_hours' | 'pb_url' | 'pb_parking_lot'
+  | 'lot_name'
+  | 'address'
+  | 'phone'
+  | 'logo_data_url'
+  | 'fee_grace_minutes'
+  | 'fee_day_threshold_hours'
+  | 'pb_url'
+  | 'pb_parking_lot'
+  | 'qr_hmac_key_b64'
 > {
   const errors: Record<string, string[]> = {};
   const out: Record<string, unknown> = {};
@@ -194,6 +216,28 @@ export function validateParkingPatch(
         errors.pb_parking_lot = ['Mã bãi xe không hợp lệ — nhập ID bãi do system_admin cấp (VD: pbc_…).'];
       } else {
         out.pb_parking_lot = t;
+      }
+    }
+  }
+
+  // BE-018: key ký QR — nội bộ (ensureQrHmacKey). Chấp nhận base64/base64url
+  // decode ra đúng 32 bytes; sai → lỗi (không tự sinh ở đây).
+  if (patch.qr_hmac_key_b64 !== undefined) {
+    const t = typeof patch.qr_hmac_key_b64 === 'string' ? patch.qr_hmac_key_b64.trim() : '';
+    if (!t) {
+      errors.qr_hmac_key_b64 = ['Khóa ký QR không hợp lệ — liên hệ Admin cấu hình lại.'];
+    } else {
+      try {
+        const raw = t.includes('-') || t.includes('_')
+          ? Buffer.from(t.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - ((t.replace(/-/g, '+').replace(/_/g, '/').length) % 4)) % 4), 'base64')
+          : Buffer.from(t, 'base64');
+        if (raw.length !== 32) {
+          errors.qr_hmac_key_b64 = ['Khóa ký QR không hợp lệ — liên hệ Admin cấu hình lại.'];
+        } else {
+          out.qr_hmac_key_b64 = t;
+        }
+      } catch {
+        errors.qr_hmac_key_b64 = ['Khóa ký QR không hợp lệ — liên hệ Admin cấu hình lại.'];
       }
     }
   }

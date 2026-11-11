@@ -17,6 +17,11 @@ dependencies:
   connectivity_plus: ^6.0.5
   pocketbase: ^0.25.3
   sqflite_common_ffi_web: ^1.2.2
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.5.0
+  permission_handler: ^13.0.2
+  flutter_secure_storage: ^11.2.0
+  crypto: ^3.0.8
 
 dev_dependencies:
   flutter_test:

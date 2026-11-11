@@ -3,12 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/pb_client.dart';
+import '../data/qr_key_store.dart';
 import '../db/app_db.dart';
 import '../models/entities.dart';
 import '../repos/auth_repo.dart';
 import '../repos/customer_repo.dart';
 import '../repos/hybrid_auth_repo.dart';
 import '../repos/parking_repo.dart';
+import '../repos/qr_repo.dart';
 import '../repos/staff_repo.dart';
 
 /// Session: null = guest. Riverpod StateProvider để GoRouter redirect.
@@ -47,6 +49,9 @@ final parkingRepoProvider =
     Provider<ParkingRepo>((ref) => ParkingRepo(ref.watch(dbProvider)));
 final customerRepoProvider =
     Provider<CustomerRepo>((ref) => CustomerRepo(ref.watch(dbProvider)));
+final qrKeyStoreProvider = Provider<QrKeyStore>((ref) => QrKeyStore());
+final qrRepoProvider = Provider<QrTicketRepo>(
+    (ref) => QrTicketRepo(ref.watch(dbProvider), ref.watch(qrKeyStoreProvider)));
 final staffRepoProvider =
     Provider<StaffRepo>((ref) => StaffRepo(ref.watch(dbProvider)));
 final syncQueueProvider =

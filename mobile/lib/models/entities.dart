@@ -224,6 +224,7 @@ class SessionRow {
     required this.status,
     required this.hourlyRate,
     required this.dailyRate,
+    this.qrText,
   });
 
   final int id;
@@ -237,6 +238,9 @@ class SessionRow {
   final String status;
   final int hourlyRate;
   final int dailyRate;
+
+  /// Chuỗi QR text ký lúc check-in (null = chưa ký — fallback text-only).
+  final String? qrText;
 }
 
 class PassRow {

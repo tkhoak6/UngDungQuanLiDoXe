@@ -8,6 +8,7 @@ import '../core/tokens.dart';
 import '../core/auth_messages.dart';
 import '../core/validators.dart';
 import '../repos/auth_repo.dart';
+import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
@@ -158,6 +159,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   String? _passErr;
   String? _confirmErr;
   String? _banner;
+  String? _syncNote;
 
   Future<void> _submit() async {
     final phoneErr = Validators.phone(_phone.text);
@@ -171,6 +173,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       _passErr = passErr;
       _confirmErr = confirmErr;
       _banner = null;
+      _syncNote = null;
     });
     if (phoneErr != null ||
         nameErr != null ||
@@ -188,9 +191,24 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               );
       ref.read(authSourceProvider.notifier).state = res.source;
       ref.read(sessionProvider.notifier).state = res.user;
+      // MO-010 offline-first: register luôn thành công local → vào app
+      // ngay. Banner đỏ chỉ còn cho lỗi local (SĐT trùng trên máy, MK
+      // yếu…); server fail thì hiện note vàng, không chặn luồng.
+      final pendingSync = res.source == AuthSource.local;
       if (mounted) {
+        setState(() {
+          _syncNote = pendingSync
+              ? 'Đã tạo tài khoản trên máy — chưa đồng bộ lên máy chủ, '
+                'sẽ thử lại khi có mạng.'
+              : null;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Đăng ký thành công.')),
+          SnackBar(
+            content: Text(pendingSync
+                ? 'Đăng ký thành công. Đã lưu trên máy, sẽ đồng bộ lên '
+                    'máy chủ khi có mạng.'
+                : 'Đăng ký thành công.'),
+          ),
         );
       }
     } on AuthException catch (e) {
@@ -221,6 +239,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             if (_banner != null)
               ErrorBanner(
                   message: _banner!, onRetry: () => setState(() {})),
+            if (_syncNote != null) _PendingSyncNote(text: _syncNote!),
             TextField(
               controller: _phone,
               keyboardType: TextInputType.phone,
@@ -328,6 +347,41 @@ class AdminBlockScreen extends ConsumerWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Note vàng "chưa đồng bộ máy chủ" (MO-010) — KHÔNG phải lỗi chặn luồng:
+/// không có nút "Thử lại", không màu đỏ, có text đầy đủ cho a11y.
+class _PendingSyncNote extends StatelessWidget {
+  const _PendingSyncNote({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: AppGaps.s12),
+      padding: const EdgeInsets.all(AppGaps.s12),
+      decoration: BoxDecoration(
+        color: AppColors.warningTint,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.warning),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off,
+              size: 20, color: AppColors.warningText),
+          const SizedBox(width: AppGaps.s8),
+          Expanded(
+            child: Text(
+              text,
+              style: AppText.body.copyWith(color: AppColors.warningText),
+            ),
+          ),
+        ],
       ),
     );
   }

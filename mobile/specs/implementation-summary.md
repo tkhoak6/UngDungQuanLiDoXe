@@ -1,3 +1,81 @@
+# MO-010 — Sửa đăng ký offline-first (implementation summary)
+
+## Triệu chứng (user báo, nối MO-003)
+- Mở màn Đăng ký → banner đỏ "Không kết nối được máy chủ. Thử lại sau."
+  chặn ngay từ đầu dù nhập đủ SĐT/họ tên/mật khẩu. Server PocketBase thật
+  đang tạm gác (merge paused) nên rớt mạng/timeout là bình thường.
+- Nguyên nhân gốc: `registerCustomer` cũ remote-FIRST — mọi lỗi server
+  không phân loại (`_mapClientError` default → PB_ERROR, PHONE_TAKEN +
+  login lại fail, timeout…) đều `throw AuthException` ra UI thành banner
+  đỏ chặn luồng, dù tài khoản local hoàn toàn tạo được.
+
+## Fix (chỉ `mobile/`, không đụng login/desktop, không chạy app)
+| File | Thay đổi |
+|---|---|
+| `lib/repos/hybrid_auth_repo.dart` | `registerCustomer` local-TRƯỚC: tạo local → `unawaited(_syncNewAccountToServer(...))` → trả `AuthSource.local` ngay. Sync nền best-effort tuyệt đối (catch-all + `dev.log`, không throw): ok → `_mirrorLocal`; `PbOfflineException` → pending; `PHONE_TAKEN` → thử `_remoteLoginAndMirror`; lỗi khác → pending. Thêm param inject `remoteRegister` (default `_defaultRemoteRegister` wrap `pbRegisterCustomer`) chỉ phục vụ test online-fail không cần mạng. Login giữ nguyên (remote-first + fallback local đúng, MO-006). |
+| `lib/screens/auth.dart` | Register success: luôn vào app ngay (session set); `AuthSource.local` → note vàng `_PendingSyncNote` (warningTint/border, icon `cloud_off`, không nút Thử lại) + SnackBar "Đã lưu trên máy, sẽ đồng bộ…". Banner đỏ chỉ còn cho lỗi local thật (SĐT trùng trên máy, validation). Import `hybrid_auth_repo.dart` cho `AuthSource`. |
+| `test/auth_register_mo010_test.dart` (mới, 5 tests) | `_FakeAuthRepo` in-memory (không chạm sqflite/mạng): offline tạo local + source local; online rớt mạng (`PbOfflineException`) vẫn pass local + sync đã chạy; online `PB_ERROR` vẫn pass local không throw; trùng SĐT trên máy → `PHONE_TAKEN`; SĐT sai → `INVALID_PHONE` trước khi đụng server. |
+| Profile (`customer_profile.dart`) | Không đổi — badge "Ngoại tuyến (local)" đã hiện sẵn = chỉ báo pending-sync bền vững trong app. `server_settings.dart` (test kết nối tường minh) giữ banner đỏ là đúng. |
+
+## Hành vi sau sửa
+- **Offline**: nhập đủ → tạo tài khoản local → vào app ngay + note vàng "chưa đồng bộ lên máy chủ".
+- **Online fail** (server gác/timeout/500): y hệt offline — không banner đỏ, sync nền pending.
+- **Online ok**: vào app ngay local-first; sync nền mirror quyền/fullName từ server.
+- **Lỗi thật**: SĐT đã có trên máy / sai định dạng / MK yếu → banner đỏ như cũ.
+
+## Verification (11/11/2026, Flutter 3.47.9)
+- `flutter analyze` → No issues found!
+- `flutter test` → All tests passed! (39 tests: 34 cũ + 5 mới MO-010)
+- grep `print(|debugPrint(` trong `lib/` → 0 match (`dev.log` không tính).
+- KHÔNG chạy app (theo contract).
+
+---
+# MO-009 — QR mobile V1a (implementation summary)
+
+## Quyết định phương án (đọc spec + backend-summary trước khi code)
+- Mobile KHÔNG gọi IPC desktop (khác máy). Khách KHÔNG ký QR (key không
+  nằm trên máy khách). Ký chỉ xảy ra trên **staff device** lúc check-in
+  (thiết bị quản lý, đúng spec §1.2) bằng key trong secure storage.
+- `qr_text` **persist vào DB local** (`parking_sessions.qr_text`, v3) lúc
+  check-in → khách render QR **offline** bằng qr_flutter (đúng spec §4).
+  Không key lúc check-in → `qr_text` NULL → card text-only (mã vé + biển
+  số + ghi chú "QR sẽ hiện khi có mạng") — đúng fallback spec §1.4.
+- Nguồn key V1a: nhập 1 lần ở màn Tôi → Khóa QR (dán base64 từ quản trị
+  viên đọc `auth:qr-key` desktop). P2: fetch qua API khi có link server.
+
+## File đã tạo/sửa (chỉ `mobile/`, không đụng desktop/Electron)
+| File | Thay đổi |
+|---|---|
+| `pubspec.yaml` | + `qr_flutter`, `mobile_scanner`, `permission_handler`, `flutter_secure_storage`, `crypto` (`flutter pub add`) |
+| `lib/core/qr_ticket.dart` (mới) | Pure Dart mirror 1-1 `src/main/qr-ticket.ts`: normalize (chỉ giữ [A-Z0-9]), epoch_min (stamp DB coi như UTC), sign HMAC-SHA256 base64url-43, verify format/version/HMAC + constant-time compare, `messageFor` Việt, `isValidKeyB64` |
+| `lib/data/qr_key_store.dart` (mới) | Keystore/Keychain wrapper (`qr_hmac_key_b64`, `qr_key_id`), KHÔNG plain prefs |
+| `lib/repos/qr_repo.dart` (mới) | `signForSession` (có key→ký+lưu, không key→null, không chặn check-in); `verify` (SIG offline + đối soát DB: NOT_FOUND/PLATE_MISMATCH/ALREADY_USED kèm giờ) |
+| `lib/db/app_db.dart` | v2→v3: `ALTER TABLE parking_sessions ADD COLUMN qr_text TEXT` (idempotent); `_create` đã có cột |
+| `lib/models/entities.dart` | `SessionRow.qrText?` (optional, không vỡ constructor cũ) |
+| `lib/repos/customer_repo.dart` | + `myParkedSessions` (mine-only, status parked — QR vé cũ không bao giờ vẽ) |
+| `lib/widgets/qr_views.dart` (mới) | `ParkedTicketCard` (QR 160 nền trắng), `TicketQrSheet` (full-screen 240), `CheckinQrView` (success sheet 200) |
+| `lib/screens/qr_scanner_sheet.dart` (mới) | Rationale Việt trước system prompt, permanently-denied → Mở Cài đặt, torch 48dp, timeout 30s gợi ý nhập tay, quét trúng → haptic + đóng camera + trả raw |
+| `lib/screens/staff_ops.dart` | Check-in success sheet gắn QR (ký ngay sau insert); Thu phí thêm segmented [Quét QR\|Nhập tay] default quét + nút Quét lại + inline Danger banner |
+| `lib/screens/customer_more.dart` | Tab Vé: section "Vé đang dùng" (loading/error/empty đủ states) + tap → bottom sheet QR |
+| `lib/screens/customer_profile.dart` | Màn Tôi (staff): card "Khóa QR" — trạng thái + dán/lưu/xóa key (validate 32 bytes) |
+| `lib/state/providers.dart` | + `qrKeyStoreProvider`, `qrRepoProvider` |
+| `android/.../AndroidManifest.xml` | `CAMERA` permission + `camera` feature `required=false`. Không có `ios/` trong repo → ghi chú P2 (copy §3 đã có sẵn trong spec) |
+| `test/qr_ticket_mo009_test.dart` (mới) | 12 tests: vector chéo node:crypto, tamper biển/sig, sai key, version lạ, format/dài, messageFor Việt mọi reason, isValidKeyB64 |
+
+## Luồng offline/online QR mobile (ghi rõ theo hợp đồng)
+- **Online hay offline, hiện QR khách**: luôn offline được (qr_text đã lưu local, qr_flutter render, không cần mạng) — đúng spec §4.
+- **Quét + verify staff offline**: SIG bằng key trong secure storage; check `status` trong DB local (parked/đã dùng). Thu offline → `pending_sync=1`; online đối soát lại (vé đã dùng → flag NEED_REVIEW — việc của P2 sync, V1 chỉ gắn cờ local).
+- **Chưa có key trên máy**: quét mở được nhưng verify trả NO_KEY ("Chưa có khóa xác thực — đăng nhập khi có mạng 1 lần.") + fallback nhập tay.
+- **Key provisioning V1a**: thủ công 1 lần (dán base64). KHÔNG bundle key vào app, KHÔNG log key (grep print = 0).
+
+## Verification (11/11/2026, Flutter 3.47.9)
+- `flutter analyze` → No issues found!
+- `flutter test` → All tests passed! (34 tests: 22 cũ + 12 mới MO-009)
+- grep `print(|debugPrint(` trong `lib/` → 0 match
+- `flutter build web --release` → √ Built build\web (scanner guarded `kIsWeb` → text-only + nhập tay)
+- KHÔNG chạy app (Leader chạy)
+
+---
 # MO-006 — Sửa login staff mobile (implementation summary)
 
 ## Nguyên nhân gốc (user báo: khoa01/khoa01 desktop OK, mobile web báo "Sai mật khẩu")

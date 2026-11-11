@@ -8,7 +8,9 @@ import '../core/validators.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
+import 'qr_scanner_sheet.dart';
 
 /// Check-in staff: biển số + khu + loại vé + mã đặt chỗ + CTA sticky.
 class CheckinScreen extends ConsumerStatefulWidget {
@@ -55,6 +57,9 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
             byUserId: me.id,
           );
       HapticFeedback.lightImpact();
+      // V1a: staff device ký QR lúc check-in (có key → QR, không key →
+      // text-only, vé vẫn hiệu lực — đối soát khi có mạng).
+      final qr = await ref.read(qrRepoProvider).signForSession(row.id);
       _plate.clear();
       if (!mounted) return;
       showAppSheet(
@@ -63,14 +68,8 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Check-in thành công',
-                style: AppText.cardTitle),
-            const SizedBox(height: AppGaps.s8),
-            PlateText(row.ticketCode, size: 20),
-            const SizedBox(height: AppGaps.s8),
-            Text(
-                '${row.licensePlate} · Khu ${row.zoneCode} · Vào ${row.checkInAt}'),
-            const SizedBox(height: AppGaps.s16),
+            CheckinQrView(session: row, qrText: qr),
+            const SizedBox(height: AppGaps.s12),
             PrimaryButton(
               label: 'Check-in tiếp',
               onPressed: () => Navigator.of(context).pop(),
@@ -221,12 +220,48 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   String? _err;
   int? _paidTotal;
 
+  /// Chế độ quét/nhập tay (spec §1.1B.1) — default Quét QR (nhanh hơn).
+  bool _scanMode = true;
+
   @override
   void dispose() {
     _query.dispose();
     _discount.dispose();
     _reason.dispose();
     super.dispose();
+  }
+
+  Future<void> _openScanner() async {
+    final raw = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 640),
+      builder: (_) => const QrScannerSheet(),
+    );
+    if (raw == null || raw.isEmpty || !mounted) return;
+    await _verifyQr(raw);
+  }
+
+  /// Quét trúng → verify offline (SIG + status local) → prefill thu phí.
+  /// Fail → inline Danger banner trên cùng màn (không sheet mới).
+  Future<void> _verifyQr(String raw) async {
+    setState(() {
+      _searching = true;
+      _err = null;
+      _paidTotal = null;
+    });
+    try {
+      final res = await ref.read(qrRepoProvider).verify(raw);
+      if (!mounted) return;
+      if (res.valid && res.session != null) {
+        setState(() => _found = res.session);
+      } else {
+        setState(() => _err = res.message ?? 'Mã không hợp lệ.');
+      }
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
   }
 
   Future<void> _search() async {
@@ -296,31 +331,67 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       body: ListView(
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [
-          SearchBar(
-            controller: _query,
-            hintText: 'Mã vé / biển số…',
-            textInputAction: TextInputAction.search,
-            onSubmitted: (_) => _search(),
-            trailing: [
-              SizedBox(
-                width: 48,
-                height: 48,
-                child: IconButton(
-                  tooltip: 'Tìm',
-                  onPressed: _search,
-                  icon: _searching
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2),
-                        )
-                      : const Icon(Icons.search),
-                ),
-              ),
-            ],
-            constraints: const BoxConstraints(minHeight: 48),
+          Semantics(
+            label: 'Chế độ tìm vé',
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                    value: true, label: Text('Quét QR')),
+                ButtonSegment(
+                    value: false, label: Text('Nhập tay')),
+              ],
+              selected: {_scanMode},
+              onSelectionChanged: (s) => setState(() {
+                _scanMode = s.first;
+                _err = null;
+              }),
+            ),
           ),
+          const SizedBox(height: AppGaps.s12),
+          if (_scanMode)
+            PrimaryButton(
+              label: _searching ? 'Đang kiểm tra…' : 'Quét mã QR',
+              loading: _searching,
+              minHeight: 52,
+              onPressed: _searching ? null : _openScanner,
+            )
+          else
+            SearchBar(
+              controller: _query,
+              hintText: 'Mã vé / biển số…',
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _search(),
+              trailing: [
+                SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: IconButton(
+                    tooltip: 'Tìm',
+                    onPressed: _search,
+                    icon: _searching
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2),
+                          )
+                        : const Icon(Icons.search),
+                  ),
+                ),
+              ],
+              constraints: const BoxConstraints(minHeight: 48),
+            ),
+          if (_scanMode && _err != null) ...[
+            const SizedBox(height: AppGaps.s12),
+            SizedBox(
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: _searching ? null : _openScanner,
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Quét lại'),
+              ),
+            ),
+          ],
           if (_err != null) ...[
             const SizedBox(height: AppGaps.s8),
             Text(_err!,

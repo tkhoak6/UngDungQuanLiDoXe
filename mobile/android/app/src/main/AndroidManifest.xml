@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- MO-009 V1a: quét QR lúc thu phí (spec §3). Không cần location/storage. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="Bãi Xe Thông Minh"
         android:name="${applicationName}"

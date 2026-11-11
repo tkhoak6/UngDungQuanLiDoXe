@@ -52,8 +52,8 @@ class AppDb {
     final dir = await getDatabasesPath();
     final created = await openDatabase(
       p.join(dir, 'parking_mobile.db'),
-      // v2 (MO-006): bổ sung staff demo còn thiếu cho DB đã tạo ở v1.
-      version: 2,
+      // v3 (MO-009): thêm `qr_text` cho vé QR V1a.
+      version: 3,
       onCreate: _create,
       onUpgrade: _upgrade,
     );
@@ -154,6 +154,7 @@ CREATE TABLE parking_sessions (
   created_by INTEGER REFERENCES users(id),
   closed_by INTEGER REFERENCES users(id),
   pending_sync INTEGER NOT NULL DEFAULT 0,
+  qr_text TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )''');
@@ -224,9 +225,18 @@ CREATE TABLE attendance (
   /// v1 → v2 (MO-006): chèn idempotent các staff demo còn thiếu cho
   /// DB đã tạo từ trước (kể cả IndexedDB trên web). Không đụng row user
   /// đã có (giữ password_hash hiện tại nếu username trùng).
+  /// v2 → v3 (MO-009): thêm `qr_text` cho vé QR V1a (idempotent).
   Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await _ensureDemoStaff(db);
+    }
+    if (oldVersion < 3) {
+      final cols = await db.rawQuery('PRAGMA table_info(parking_sessions)');
+      final hasQr =
+          cols.any((c) => (c['name'] as String?) == 'qr_text');
+      if (!hasQr) {
+        await db.execute('ALTER TABLE parking_sessions ADD COLUMN qr_text TEXT');
+      }
     }
   }
 

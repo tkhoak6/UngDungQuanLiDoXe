@@ -6,6 +6,7 @@ import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
 
 /// Vé tháng (P3 xếp dọc): Section A vé của tôi + Section B đăng ký mới.
@@ -99,6 +100,46 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
           return ListView(
             padding: const EdgeInsets.all(AppGaps.s16),
             children: [
+              const Text('Vé đang dùng', style: AppText.cardTitle),
+              const SizedBox(height: AppGaps.s12),
+              FutureBuilder<List<SessionRow>>(
+                future: repo.myParkedSessions(me.phone ?? me.username),
+                builder: (context, parkSnap) {
+                  if (parkSnap.connectionState ==
+                      ConnectionState.waiting) {
+                    return const LoadingList(rows: 1);
+                  }
+                  if (parkSnap.hasError) {
+                    return ErrorBanner(
+                      message: 'Không tải được vé đang dùng.',
+                      onRetry: () => setState(() => _reload++),
+                    );
+                  }
+                  final parked = parkSnap.data ?? <SessionRow>[];
+                  if (parked.isEmpty) {
+                    return const Text(
+                      'Không có xe nào đang đỗ.',
+                      style: AppText.helper,
+                    );
+                  }
+                  return Column(
+                    children: parked
+                        .map((s) => Padding(
+                              padding: const EdgeInsets.only(
+                                  bottom: AppGaps.s8),
+                              child: ParkedTicketCard(
+                                session: s,
+                                onExpand: () => showAppSheet(
+                                  context,
+                                  TicketQrSheet(session: s),
+                                ),
+                              ),
+                            ))
+                        .toList(),
+                  );
+                },
+              ),
+              const SizedBox(height: AppGaps.s24),
               const Text('Vé của tôi', style: AppText.cardTitle),
               const SizedBox(height: AppGaps.s12),
               if (passes.isEmpty)

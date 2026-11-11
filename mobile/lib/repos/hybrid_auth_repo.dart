@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as dev;
 
 import '../data/pb_auth_remote.dart';
@@ -16,17 +17,29 @@ class HybridAuthResult {
   final AuthSource source;
 }
 
-/// Adapter auth hybrid (MO-003): thử PocketBase trước, rớt mạng → local.
+/// Adapter auth hybrid (MO-003/MO-010): login thử PocketBase trước rớt
+/// mạng → local; register local trước, sync server nền best-effort.
 ///
 /// - Login: PB ok → mirror local (để lần sau offline vẫn vào được) → trả
 ///   [AuthSource.remote]. PB từ chối rõ ràng (sai MK…) mà local lại đúng
 ///   (tài khoản chỉ có local) → trả [AuthSource.local].
-/// - Register: PB ok (role customer) → mirror local. Rớt mạng → local.
-///   Trùng SĐT trên server → thử login PB luôn (người dùng đăng ký lại);
-///   đúng MK → vào app, sai → báo PHONE_TAKEN.
+/// - Register: LOCAL TRƯỚC (MO-010, offline-first) → vào app ngay, KHÔNG
+///   chặn vì server. Đồng bộ lên PB best-effort nền (fire-and-forget):
+///   có mạng thì mirror + đánh dấu, rớt mạng/lỗi server thì bỏ qua để
+///   lần sau thử lại — KHÔNG bao giờ ném lỗi server ra UI. Chỉ lỗi
+///   local (SĐT sai/trùng trên máy, MK yếu…) mới hiện banner đỏ.
+///   Trùng SĐT trên server + chưa có local: remote PHONE_TAKEN được xử
+///   lý trong sync nền (thử login + mirror), không chặn luồng chính.
 /// - sqflite local giữ nguyên làm fallback/offline mặc định (không xóa).
 class HybridAuthRepo {
-  HybridAuthRepo(this._local, this._db, this._pbLoader);
+  HybridAuthRepo(this._local, this._db, this._pbLoader,
+      {Future<PbRemoteUser> Function(
+        PbClient pb, {
+        required String phone,
+        required String password,
+        required String fullName,
+      })? remoteRegister})
+      : _remoteRegisterOverride = remoteRegister;
 
   final AuthRepo _local;
   final AppDb _db;
@@ -34,6 +47,15 @@ class HybridAuthRepo {
   /// Loader do providers.dart cung cấp (tránh import vòng state/*).
   /// Trả null khi chưa khởi tạo được client — lúc đó dùng local thuần.
   final Future<PbClient?> Function() _pbLoader;
+
+  /// Hàm đăng ký remote — mặc định [pbRegisterCustomer]. Tham số inject
+  /// chỉ phục vụ test (giả lập online-fail mà không cần mạng/PB thật).
+  final Future<PbRemoteUser> Function(
+    PbClient pb, {
+    required String phone,
+    required String password,
+    required String fullName,
+  })? _remoteRegisterOverride;
 
   Future<HybridAuthResult> login(String username, String password) async {
     final u = username.trim();
@@ -69,51 +91,100 @@ class HybridAuthRepo {
     return HybridAuthResult(user, AuthSource.local);
   }
 
+  /// Đăng ký offline-first (MO-010): local trước, server sync nền.
+  ///
+  /// - Luôn tạo tài khoản local trước → throw duy nhất lỗi local
+  ///   (validation/PHONE_TAKEN trên máy) để UI hiện banner đỏ đúng chỗ.
+  /// - Lỗi server (rớt mạng, PB_ERROR, PHONE_TAKEN trên server…) KHÔNG
+  ///   ném ra — sync nền tự xử lý, user vào app ngay với
+  ///   [AuthSource.local] + note vàng "chưa đồng bộ".
   Future<HybridAuthResult> registerCustomer({
     required String phone,
     required String password,
     required String fullName,
   }) async {
-    final pb = await _pbLoader();
-    if (pb != null) {
-      try {
-        final remote = await pbRegisterCustomer(
-          pb.client,
-          phone: phone,
-          password: password,
-          fullName: fullName,
-        );
-        await _mirrorLocal(
-          username: phone.trim(),
-          password: password,
-          remote: remote,
-        );
-        final user = await _local.login(phone.trim(), password);
-        return HybridAuthResult(user, AuthSource.remote);
-      } on PbOfflineException {
-        // Rớt mạng → đăng ký local bên dưới.
-      } on PbAuthFailure catch (e) {
-        if (e.code == 'PHONE_TAKEN') {
-          // SĐT đã có trên server — thử login luôn cho tiện.
-          try {
-            return await _remoteLoginAndMirror(pb, phone.trim(), password);
-          } on PbAuthFailure {
-            throw AuthException(e.code, e.message);
-          } on PbOfflineException {
-            // Mạng chập chờn → để local quyết bên dưới.
-          }
-        } else {
-          throw AuthException(e.code, e.message);
-        }
-      }
-    }
     final user = await _local.registerCustomer(
       phone: phone,
       password: password,
       fullName: fullName,
     );
+    unawaited(_syncNewAccountToServer(
+      phone: phone.trim(),
+      password: password,
+      fullName: fullName.trim(),
+    ));
     return HybridAuthResult(user, AuthSource.local);
   }
+
+  /// Sync nền tài khoản vừa tạo local lên PocketBase (fire-and-forget).
+  ///
+  /// Best-effort tuyệt đối: mọi lỗi (loader null, rớt mạng, PB từ chối,
+  /// mirror lỗi) đều chỉ log — KHÔNG ném, để lần mở app sau thử lại.
+  /// Trùng SĐT trên server → thử login + mirror (user đăng ký lại).
+  Future<void> _syncNewAccountToServer({
+    required String phone,
+    required String password,
+    required String fullName,
+  }) async {
+    try {
+      final pb = await _pbLoader();
+      if (pb == null) {
+        dev.log('register sync: chưa có PB client → để pending',
+            name: 'HybridAuthRepo');
+        return;
+      }
+      final register = _remoteRegisterOverride ?? _defaultRemoteRegister;
+      try {
+        final remote = await register(
+          pb,
+          phone: phone,
+          password: password,
+          fullName: fullName,
+        );
+        await _mirrorLocal(
+          username: phone,
+          password: password,
+          remote: remote,
+        );
+        dev.log('register sync: ok ($phone)', name: 'HybridAuthRepo');
+      } on PbOfflineException {
+        dev.log('register sync: offline → pending ($phone)',
+            name: 'HybridAuthRepo');
+      } on PbAuthFailure catch (e) {
+        if (e.code == 'PHONE_TAKEN') {
+          try {
+            await _remoteLoginAndMirror(pb, phone, password);
+            dev.log('register sync: SĐT đã có → login+mirror ok ($phone)',
+                name: 'HybridAuthRepo');
+          } catch (_) {
+            dev.log('register sync: PHONE_TAKEN nhưng login fail → pending',
+                name: 'HybridAuthRepo');
+          }
+        } else {
+          dev.log('register sync: server từ chối ${e.code} → pending',
+              name: 'HybridAuthRepo');
+        }
+      }
+    } catch (e) {
+      // Catch-all: sync nền không bao giờ được crash app/test.
+      dev.log('register sync: lỗi không mong đợi → pending ($e)',
+          name: 'HybridAuthRepo');
+    }
+  }
+
+  /// Adapter mặc định: PbClient → PocketBase thô cho [pbRegisterCustomer].
+  static Future<PbRemoteUser> _defaultRemoteRegister(
+    PbClient pb, {
+    required String phone,
+    required String password,
+    required String fullName,
+  }) =>
+      pbRegisterCustomer(
+        pb.client,
+        phone: phone,
+        password: password,
+        fullName: fullName,
+      );
 
   /// Đăng xuất: xóa phiên PB (nếu có). Session app do UI tự null.
   Future<void> logoutRemote() async {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/qr_ticket.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
@@ -227,6 +228,35 @@ class StaffMeScreen extends ConsumerStatefulWidget {
 
 class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
   int _reload = 0;
+  final _key = TextEditingController();
+  String? _keyMsg;
+  bool _keySaving = false;
+
+  @override
+  void dispose() {
+    _key.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveKey() async {
+    final v = _key.text.trim();
+    if (!QrTicket.isValidKeyB64(v)) {
+      setState(() => _keyMsg =
+          'Khóa không hợp lệ (cần base64 đúng 256-bit). Hỏi quản trị viên.');
+      return;
+    }
+    setState(() {
+      _keySaving = true;
+      _keyMsg = null;
+    });
+    try {
+      await ref.read(qrKeyStoreProvider).saveKey(keyB64: v);
+      _key.clear();
+      if (mounted) setState(() => _keyMsg = 'Đã lưu khóa QR trên máy này.');
+    } finally {
+      if (mounted) setState(() => _keySaving = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -305,6 +335,91 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
               },
             ),
           ],
+          const SizedBox(height: AppGaps.s16),
+          const Text('Khóa QR (máy này)', style: AppText.cardTitle),
+          const SizedBox(height: AppGaps.s8),
+          FutureBuilder<bool>(
+            future: ref.watch(qrKeyStoreProvider).hasKey,
+            builder: (context, snap) {
+              final has = snap.data ?? false;
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppGaps.s12),
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              has
+                                  ? 'Đã có khóa — quét QR offline được.'
+                                  : 'Chưa có khóa — quét QR sẽ báo “chưa xác thực”.',
+                              style: AppText.body,
+                            ),
+                          ),
+                          const SizedBox(width: AppGaps.s8),
+                          has
+                              ? AppBadge.success('Có khóa')
+                              : AppBadge.warning('Chưa có'),
+                        ],
+                      ),
+                      const SizedBox(height: AppGaps.s8),
+                      TextField(
+                        controller: _key,
+                        decoration: const InputDecoration(
+                          labelText: 'Dán khóa (base64 từ quản trị viên)',
+                          helperText:
+                              'Chỉ nhập 1 lần khi có mạng. Khóa lưu trong Keystore, không hiện lại.',
+                        ),
+                      ),
+                      if (_keyMsg != null) ...[
+                        const SizedBox(height: AppGaps.s4),
+                        Text(_keyMsg!, style: AppText.helper),
+                      ],
+                      const SizedBox(height: AppGaps.s8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              height: 48,
+                              child: OutlinedButton(
+                                onPressed: _keySaving
+                                    ? null
+                                    : _saveKey,
+                                child: Text(_keySaving
+                                    ? 'Đang lưu…'
+                                    : 'Lưu khóa'),
+                              ),
+                            ),
+                          ),
+                          if (has) ...[
+                            const SizedBox(width: AppGaps.s8),
+                            SizedBox(
+                              height: 48,
+                              child: TextButton(
+                                onPressed: () async {
+                                  await ref
+                                      .read(qrKeyStoreProvider)
+                                      .clear();
+                                  if (mounted) {
+                                    setState(() => _keyMsg =
+                                        'Đã xóa khóa trên máy này.');
+                                  }
+                                },
+                                child: const Text('Xóa'),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
           const SizedBox(height: AppGaps.s16),
           FutureBuilder<int>(
             future: sync.pending(),
