@@ -248,10 +248,37 @@ function toMinutes(hhmm: string): number {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-/** Cộng phút vào 'HH:mm', trả 'HH:mm' (giữ trong ngày — P4 khung 06:00–22:00 nên không tràn). */
-function plusMinutesHHMM(hhmm: string, mins: number): string {
-  const t = toMinutes(hhmm) + mins;
-  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+/**
+ * BE-019 đặt chỗ 24/24 (qua đêm được): `end <= start` = kết thúc sang hôm sau.
+ * Duration tính theo datetime (cộng 24h khi qua đêm), 15p–4h.
+ */
+function reservationDurationMin(start: string, end: string): number {
+  let d = toMinutes(end) - toMinutes(start);
+  if (d <= 0) d += 24 * 60; // qua đêm (start == end → 24h → rớt range 15p–4h bên dưới)
+  return d;
+}
+
+/** 'YYYY-MM-DD' + 1 ngày (UTC, khớp sqlite datetime('now')). */
+function nextDayOf(dateYYYYMMDD: string): string {
+  const dt = new Date(`${dateYYYYMMDD}T00:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+/**
+ * Cộng phút vào datetime 'YYYY-MM-DD HH:mm' → 'YYYY-MM-DD HH:MM:SS',
+ * tự tràn sang hôm sau (VD: '2026-11-11 23:50' + 20p → '2026-11-12 00:10:00').
+ */
+function addMinutesToDateTime(date: string, hhmm: string, mins: number): string {
+  let total = toMinutes(hhmm) + mins;
+  let d = date;
+  while (total >= 24 * 60) {
+    total -= 24 * 60;
+    d = nextDayOf(d);
+  }
+  const hh = String(Math.floor(total / 60)).padStart(2, '0');
+  const mm = String(total % 60).padStart(2, '0');
+  return `${d} ${hh}:${mm}:00`;
 }
 
 /** Active pass valid right now for vehicle (+zone scope). Returns null when none. */
@@ -424,11 +451,11 @@ export function registerIpcHandlers(db: AppDb): void {
   });
 
   // ---- sessions: check-in ----
-  // P4 (BE-011): sweep hết hạn TRƯỚC mỗi check-in (pending quá expires_at →
-  // expired + spot → available), rồi mới xử lý. Thêm `reservation_code?`
+  // P4 (BE-011, BE-019 24/24): sweep hết hạn TRƯỚC mỗi check-in (pending quá expires_at
+  // = giờ kết thúc + 20p → expired + spot → available), rồi mới xử lý. Thêm `reservation_code?`
   // optional: khớp pending của chính chủ (biển số + SĐT snapshot) trong
   // ngày/khung giờ → consume pending → completed (≡ used) + dùng đúng spot
-  // đã giữ. Quá 20p sau start_time mà chưa đến: sweep đã đánh expired → báo
+  // đã giữ. Quá 20p sau giờ kết thúc mà chưa đến: sweep đã đánh expired → báo
   // hết hiệu lực, KHÔNG cho check-in bằng mã đó.
   register(db, 'sessions:check-in', 'staff', (d, input: CheckInInput) => {
     const me = requireRole('staff');
@@ -453,7 +480,7 @@ export function registerIpcHandlers(db: AppDb): void {
       requirePerm(d, 'reservation');
       const r = d.prepare(`SELECT * FROM reservations WHERE code = ?`).get(resCode) as Reservation | undefined;
       if (!r) throw new AppError('Mã đặt chỗ không tồn tại — kiểm tra lại mã R-…');
-      if (r.status === 'expired') throw new AppError(`Mã ${r.code} đã hết hiệu lực (quá 20 phút sau giờ bắt đầu)`);
+      if (r.status === 'expired') throw new AppError(`Mã ${r.code} đã hết hiệu lực (quá 20 phút sau giờ kết thúc)`);
       if (r.status !== 'pending') throw new AppError(`Mã ${r.code} không còn hiệu lực`);
       if (normalizePlate(r.license_plate) !== plate) {
         throw new AppError(`Mã ${r.code} giữ cho biển số ${r.license_plate} — không áp dụng cho xe này`);
@@ -470,10 +497,17 @@ export function registerIpcHandlers(db: AppDb): void {
         }
       }
       const today = sqliteNow(d).slice(0, 10);
-      if (r.date !== today) throw new AppError(`Mã ${r.code} chỉ hiệu lực trong ngày ${r.date}`);
-      const nowTime = sqliteNow(d).slice(11, 16);
-      if (nowTime > r.end_time) {
-        // Khung giữ đã trôi qua mà sweep chưa kịp đánh (đồng hồ lệch) → đánh expired ngay.
+      if (r.date !== today) {
+        // BE-019 24/24 qua đêm: end <= start = kết thúc sang hôm sau
+        // → mã hiệu lực 2 ngày (ngày bắt đầu + ngày kết thúc).
+        const endDate = r.end_time > r.start_time ? r.date : nextDayOf(r.date);
+        if (today !== r.date && today !== endDate) {
+          throw new AppError(`Mã ${r.code} không hiệu lực hôm nay (đặt ${r.date} ${r.start_time}→${r.end_time})`);
+        }
+      }
+      const nowStr = sqliteNow(d);
+      if (nowStr > r.expires_at) {
+        // Quá expires_at (= giờ kết thúc + 20p) mà sweep chưa kịp đánh → đánh expired ngay.
         d.prepare(`UPDATE reservations SET status = 'expired' WHERE id = ?`).run(r.id);
         if (r.spot_id !== null) {
           d.prepare(`UPDATE parking_spots SET status = 'available' WHERE id = ? AND status = 'reserved'`).run(r.spot_id);
@@ -1450,12 +1484,12 @@ export function registerIpcHandlers(db: AppDb): void {
     return ok({ rows, total } satisfies CustomerPassesOutput);
   });
 
-  // ---- customer area P4 (spec ./specs/customer-area.md §P4 — BE-011) ----
-  // Giữ chỗ trong ngày: customer tự đặt → pending + 1 ô available → reserved
-  // (auto-pick, cùng 1 transaction). Quota ≤ 2 pending|active/customer/ngày
-  // (COUNT trước INSERT — race nhỏ chấp nhận được ở app single-writer, cùng
-  // lý do như ticketCode/passCode COUNT hiện tại). date backend ép = today,
-  // bỏ qua client (V1 chỉ giữ trong ngày). Check-in bằng mã ở sessions:check-in.
+  // ---- customer area P4 (spec ./specs/customer-area.md §P4 — BE-011, BE-019 24/24) ----
+  // Đặt chỗ mọi giờ + qua đêm được (end <= start = sang hôm sau). Quota ≤ 2
+  // pending|active/customer/ngày bắt đầu (COUNT trước INSERT — race nhỏ chấp
+  // nhận được ở app single-writer). date backend ép = today (bỏ qua client).
+  // expires_at = giờ KẾT THÚC + 20p (datetime đầy đủ, tự tràn ngày). Check-in
+  // bằng mã ở sessions:check-in.
   register(db, 'customer:reserve', 'none', (d, input: CustomerReserveInput) => {
     const me = requireCustomer();
     const mePhone = (me.phone ?? '').trim().replace(/[\s.\-()]/g, '');
@@ -1473,20 +1507,18 @@ export function registerIpcHandlers(db: AppDb): void {
     if (vtype && zone.vehicle_type_allowed !== 'both' && zone.vehicle_type_allowed !== vtype) {
       throw new AppError(`Khu ${zone.code} không nhận loại xe này.`);
     }
-    // Khung giờ: alias time_from/time_to (api-contract §13) → start_time/end_time.
+    // Khung giờ 24/24 + qua đêm: alias time_from/time_to (api-contract §13) → start_time/end_time.
+    // end <= start = kết thúc sang hôm sau (VD: 23:00→01:00). KHÔNG giới hạn khung giờ.
     const start = (input.start_time ?? input.time_from ?? '').trim();
     const end = (input.end_time ?? input.time_to ?? '').trim();
     if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) {
-      throw new AppError('Khung giờ không hợp lệ (HH:mm) — VD: 08:00–12:00.');
+      throw new AppError('Khung giờ không hợp lệ (HH:mm) — VD: 08:00–12:00 hoặc 23:00–01:00 (qua đêm).');
     }
-    if (start < '06:00' || end > '22:00') {
-      throw new AppError('Bãi chỉ giữ chỗ trong khung 06:00–22:00.');
-    }
-    if (!(end > start)) throw new AppError('Giờ kết thúc phải sau giờ bắt đầu.');
-    const durMin = toMinutes(end) - toMinutes(start);
-    if (durMin < 60 || durMin > 240) throw new AppError('Mỗi lượt giữ chỗ từ 1 đến 4 giờ.');
+    if (start === end) throw new AppError('Giờ kết thúc phải sau giờ bắt đầu.');
+    const durMin = reservationDurationMin(start, end);
+    if (durMin < 15 || durMin > 240) throw new AppError('Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ.');
     const nowTime = sqliteNow(d).slice(11, 16);
-    // Giờ bắt đầu không được quá khứ > 15p (spec P4.4) — so bằng phút tuyệt đối.
+    // Giờ bắt đầu không được quá khứ > 15p (spec P4.4) — so bằng phút cùng ngày bắt đầu (= today).
     if (toMinutes(start) < toMinutes(nowTime) - 15) {
       throw new AppError('Giờ bắt đầu đã qua — vui lòng chọn khung giờ khác.');
     }
@@ -1502,7 +1534,9 @@ export function registerIpcHandlers(db: AppDb): void {
       const spot = d.prepare(`SELECT * FROM parking_spots WHERE zone_id = ? AND status = 'available' ORDER BY spot_number LIMIT 1`).get(zone.id) as ParkingSpot | undefined;
       if (!spot) throw new AppError(`Khu ${zone.code} vừa hết chỗ giữ — chọn khu khác.`);
       const code = reservationCode(d, today);
-      const expiresAt = `${today} ${plusMinutesHHMM(start, 20)}:00`; // start + ~20p
+      // BE-019: expires_at = giờ KẾT THÚC + 20p (datetime đầy đủ, qua đêm tràn ngày).
+      const endDate = end > start ? today : nextDayOf(today);
+      const expiresAt = addMinutesToDateTime(endDate, end, 20);
       const r = d
         .prepare(
           `INSERT INTO reservations
@@ -1515,7 +1549,8 @@ export function registerIpcHandlers(db: AppDb): void {
       return d.prepare(`SELECT * FROM reservations WHERE id = ?`).get(r.lastInsertRowid) as Reservation;
     });
     const row = tx();
-    return ok(row, `Đã giữ chỗ ${plate} ở khu ${zone.code} — mã ${row.code}, hiệu lực đến ${row.end_time}.`);
+    const overnightNote = row.end_time > row.start_time ? '' : ' (qua đêm)';
+    return ok(row, `Đã giữ chỗ ${plate} ở khu ${zone.code} — mã ${row.code}, hiệu lực đến ${row.end_time}${overnightNote}.`);
   });
 
   register(db, 'customer:reservations', 'none', (d, input: CustomerReservationsInput) => {

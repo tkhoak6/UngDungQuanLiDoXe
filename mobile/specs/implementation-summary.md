@@ -1,3 +1,43 @@
+# MO-012 — Đặt nhanh 1 chạm + 24/24 mobile (nối BE-019 + FE-023)
+
+## Quyết định (đọc spec trước khi code)
+- Desktop `MyReservationsPage.tsx` (FE-023) vẫn kẹp khung 06:00–22:00
+  (`OPEN_MIN/CLOSE_MIN`, `quickTooLate`, note "Đã rút còn…", "quay lại sáng
+  mai"); mobile theo hợp đồng MO-012 **bỏ toàn bộ**: KHÔNG clamp/khóa theo
+  giờ, KHÔNG chữ 06:00–22:00, chạy 24/24 như BE-019.
+- Quy tắc BE-019 áp nguyên: `end <= start` = qua đêm (+24h), duration
+  15p–4h, hết hạn = **giờ kết thúc + 20p** (datetime đầy đủ, tràn ngày —
+  VD 23:00→01:00 hết hạn 01:20 hôm sau), `date` = ngày bắt đầu (= today),
+  quá khứ >15p mới lỗi, quota 2 pending|active/ngày giữ nguyên.
+- DB local (`app_db.dart` bảng `reservations`) KHÔNG có CHECK khung giờ
+  nên INSERT qua đêm / 15–59p chạy ngay, không chờ migration-008
+  (migration-008 chỉ cần cho SQLite desktop).
+
+## File đã tạo/sửa (chỉ `mobile/`, không đụng desktop/Electron, không chạy app)
+| File | Thay đổi |
+|---|---|
+| `lib/core/validators.dart` | `slot()`: XÓA check `fromMin < 6:00` / `toMin > 22:00`; `toMin == fromMin` → "Giờ kết thúc phải sau giờ bắt đầu."; duration qua đêm (+24h khi `end <= start`) 15p–4h → "Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ."; quá khứ >15p → "Giờ bắt đầu đã qua — vui lòng chọn khung giờ khác." (giữ check cùng ngày) |
+| `lib/core/reservations.dart` (mới, pure) | `isOvernight`, `reservationDurationMin` (qua đêm +24h), `hhmm` (vòng 24h), `fmtDur`, `startEndOf` (end qua đêm +1 ngày), `stampOf` ('YYYY-MM-DD HH:MM:SS'), `minutesToExpiry` (countdown từ `expires_at`, null khi parse lỗi) |
+| `lib/repos/customer_repo.dart` | `createReservation` + param `plate` (normalize + validate, lưu vào `license_plate` — cũ ghi `''` nên check-in không đối soát được); end qua đêm qua `startEndOf`; **`expires_at` = giờ kết thúc + 20p** (cũ `now+20p` sai khi quick đặt dài/quá đêm); message hết chỗ → "Khu vừa hết chỗ giữ — chọn khu khác." (Warning tone như spec); quota/sweep/capacity giữ nguyên |
+| `lib/screens/customer_main.dart` | Viết lại `ReservationsScreen`: mode mặc định **đặt nhanh** (`_quick=true`) — Khu (dropdown availability, còn chỗ, disable khu hết) + Biển số (prefill xe đầu tiên từ `myVehicles`; >1 xe → dropdown + "Biển số khác…") + chips 1/2/3/4h (default 2h) + dòng "Bắt đầu: ngay bây giờ (HH:MM) → kết thúc dự kiến HH:MM (X giờ)" (+ "· qua đêm") + nút **"Giữ chỗ ngay"** (start = now chốt lúc bấm, KHÔNG ô nhập giờ, KHÔNG disable theo giờ). Link **"Chỉnh giờ chi tiết"** ↔ "Về đặt nhanh"; form tay Từ/Đến (`showTimePicker` mọi giờ, qua đêm được, dòng "X giờ · qua đêm (sang hôm sau)" / cảnh báo "mỗi lượt 15 phút–4 giờ"). List "Giữ chỗ của tôi": badge Giữ chỗ/Sắp hết (≤15p)/Đã nhận/Xong/Hết hạn + countdown "Hết hạn sau Np · Hết hạn lúc HH:MM" (quá hạn → "Đã quá giờ hẹn — hệ thống sẽ tự hủy") tick 30s + poll 60s + Copy mã + Hủy (dialog xác nhận) + "Đặt lại" (nạp giờ vé cũ vào form tay). Success sheet: mã mono + "(qua đêm)" + hết hạn đầy đủ + Copy mã. Quota ≥2 → dòng cảnh báo + repo chặn chốt. XÓA toàn bộ chuỗi 06:00–22:00/clamp/`quickTooLate` |
+| `test/validators_test.dart` | Slot test viết lại theo BE-019 (15p ok, <15p chặn, qua đêm 23:00→01:00 ok, 21:00→23:00 ok, start==end chặn, quá khứ >15p chặn / ≤15p cho qua) |
+| `test/reservations_mo012_test.dart` (mới, 5 tests) | Duration cùng ngày/qua đêm, hhmm vòng 24h, fmtDur, startEndOf + expires tràn ngày (01:20 hôm sau), minutesToExpiry countdown/âm/null |
+
+## Hành vi qua đêm (theo hợp đồng)
+- 23:30 đặt nhanh 2h → start 23:30 hôm nay, end 01:30 **hôm sau**, hết hạn
+  01:50 hôm sau; card hiện "23:30–01:30" + countdown đếm từ `expires_at`
+  (không kẹt ở `end_time` cùng ngày như BE cũ); sweep `pending →
+  expired` đúng cả qua đêm (so `expires_at < datetime('now')`).
+- Đêm nào cũng đặt được — không còn "bãi sắp đóng cửa, quay lại sáng mai".
+
+## Verification (11/11/2026, Flutter 3.47.9, `D:\flutter\bin\flutter.bat`)
+- `flutter analyze` → No issues found!
+- `flutter test` → All tests passed! (44 tests: 39 cũ + 5 mới MO-012)
+- grep `print(|debugPrint(` trong `lib/` → 0 match
+- KHÔNG chạy app (theo contract). KHÔNG đụng desktop/Electron.
+
+---
+
 # MO-010 — Sửa đăng ký offline-first (implementation summary)
 
 ## Triệu chứng (user báo, nối MO-003)

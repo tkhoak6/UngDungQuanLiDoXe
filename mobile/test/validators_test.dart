@@ -20,31 +20,66 @@ void main() {
       expect(Validators.password('123'), isNotNull);
     });
 
-    test('slot V1: today, 1–4h, 06:00–22:00', () {
+    test('slot 24/24 + qua đêm (BE-019): 15p–4h, không khung giờ', () {
       final now = DateTime(2026, 11, 10, 8, 0);
       expect(
           Validators.slot(
               date: now, now: now, fromMin: 9 * 60, toMin: 11 * 60),
           isNull);
+      // 15 phút ok (cũ chặn <1h)
       expect(
           Validators.slot(
-              date: now, now: now, fromMin: 9 * 60, toMin: 9 * 60 + 30),
-          isNotNull); // < 1h
+              date: now, now: now, fromMin: 9 * 60, toMin: 9 * 60 + 15),
+          isNull);
+      // <15p chặn
+      expect(
+          Validators.slot(
+              date: now, now: now, fromMin: 9 * 60, toMin: 9 * 60 + 10),
+          isNotNull);
+      // >4h chặn
       expect(
           Validators.slot(
               date: now, now: now, fromMin: 9 * 60, toMin: 15 * 60),
-          isNotNull); // > 4h
+          isNotNull);
+      // qua đêm 23:00→01:00 (2h) ok — KHÔNG còn lỗi quá 22h
       expect(
           Validators.slot(
-              date: now, now: now, fromMin: 21 * 60, toMin: 23 * 60),
-          isNotNull); // quá 22h
+              date: now,
+              now: DateTime(2026, 11, 10, 22, 30),
+              fromMin: 23 * 60,
+              toMin: 60),
+          isNull);
+      // ngoài khung cũ 21:00→23:00 ok (không clamp 06:00–22:00)
+      expect(
+          Validators.slot(
+              date: now,
+              now: DateTime(2026, 11, 10, 20, 0),
+              fromMin: 21 * 60,
+              toMin: 23 * 60),
+          isNull);
+      // start == end chặn
+      expect(
+          Validators.slot(
+              date: now, now: now, fromMin: 9 * 60, toMin: 9 * 60),
+          isNotNull);
+      // khác today chặn
       expect(
           Validators.slot(
               date: now.subtract(const Duration(days: 1)),
               now: now,
               fromMin: 9 * 60,
               toMin: 11 * 60),
-          isNotNull); // khác today
+          isNotNull);
+      // quá khứ >15p chặn
+      expect(
+          Validators.slot(
+              date: now, now: now, fromMin: 7 * 60, toMin: 9 * 60),
+          isNotNull);
+      // quá khứ trong 15p cho qua (quick mode chốt giờ bấm nút)
+      expect(
+          Validators.slot(
+              date: now, now: now, fromMin: 7 * 60 + 50, toMin: 9 * 60),
+          isNull);
     });
   });
 }

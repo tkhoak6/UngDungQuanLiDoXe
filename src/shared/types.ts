@@ -372,11 +372,12 @@ export interface CustomerPassesOutput {
   total: number; // COUNT cùng filter (cho pagination)
 }
 
-// ---- Customer area P4 (spec ./specs/customer-area.md §P4 — BE-011) ----
-// Đặt chỗ trong ngày (date = today, backend ép). Luồng status:
+// ---- Customer area P4 (spec ./specs/customer-area.md §P4 — BE-011, BE-019 24/24) ----
+// Đặt chỗ mọi giờ + qua đêm được (end <= start = sang hôm sau, datetime đầy đủ).
+// Luồng status:
 // pending (giữ chỗ ≡ spec 'held') ──check-in bằng mã──▶ completed (≡ used);
-// quá expires_at (start + ~20p) ──sweep──▶ expired (+ spot → 'available');
-// khách hủy ──▶ cancelled. Quota ≤ 2 pending|active/customer/ngày (backend COUNT).
+// quá expires_at (giờ kết thúc + 20p) ──sweep──▶ expired (+ spot → 'available');
+// khách hủy ──▶ cancelled. Quota ≤ 2 pending|active/customer/ngày bắt đầu (backend COUNT).
 // Sweep chạy khi mở app + trước mỗi check-in (cùng transaction với trả spot).
 
 export interface Reservation {
@@ -388,11 +389,11 @@ export interface Reservation {
   customer_phone: string; // snapshot SĐT lúc đặt (pattern monthly_passes)
   zone_id: number;
   spot_id: number | null; // ô auto-pick đã giữ (NULL = chỉ giữ theo khu)
-  date: string; // YYYY-MM-DD (= today ở V1, backend ép)
-  start_time: string; // HH:mm, CHECK >= '06:00'
-  end_time: string; // HH:mm, CHECK <= '22:00', duration 1–4h
+  date: string; // YYYY-MM-DD (= ngày bắt đầu, backend ép = today; end có thể sang hôm sau)
+  start_time: string; // HH:mm, mọi giờ trong ngày (24/24, không giới hạn khung)
+  end_time: string; // HH:mm, end <= start = qua đêm (sang hôm sau), duration 15p–4h
   status: ReservationStatus; // pending ≡ đang giữ
-  expires_at: string; // ISO8601 = start + ~20p (sweep job dùng)
+  expires_at: string; // ISO8601 = giờ kết thúc + 20p (datetime đầy đủ, sweep job dùng)
   created_at: string;
   updated_at: string;
 }

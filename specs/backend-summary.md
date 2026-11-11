@@ -721,3 +721,64 @@ DB packaged app nằm ở `<userData>/parking.db`.
   PENDING như BE-016) và nhánh mirror `name/status` live.
 - **Status: partially_verified** (types + mapping + config + IPC wiring +
   smoke read-only live đều chạy thật; nhánh auth-success live chờ test account).
+
+## BE-019 — Đặt chỗ 24/24 + qua đêm (bỏ khung 06:00–22:00)
+
+- `src/main/ipc-handlers.ts` (`customer:reserve`): XÓA check `start < '06:00' ||
+  end > '22:00'` + message khung giờ; validate mới — `start === end` → `"Giờ
+  kết thúc phải sau giờ bắt đầu."`; duration qua đêm (`end <= start` = sang
+  hôm sau, `+24h`) phải 15p–4h → `"Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ."`
+  (cũ 1–4h); `from` quá khứ >15p → `"Giờ bắt đầu đã qua — vui lòng chọn khung
+  giờ khác."` (giữ nguyên, so phút cùng ngày bắt đầu = today); KHÔNG check
+  khung giờ. `date` backend ép = today (bỏ qua client); quota 2 pending|active
+  /ngày bắt đầu giữ nguyên. `expires_at` đổi từ start+20p sang **giờ KẾT THÚC
+  + 20p** (datetime đầy đủ `addMinutesToDateTime`, tự tràn ngày — VD 23:00→01:00
+  thì hết hạn 01:20 hôm sau); success message thêm ` (qua đêm)` khi qua đêm.
+- `sessions:check-in` (`reservation_code?`): hỗ trợ mã qua đêm — hiệu lực 2 ngày
+  (`today == date` hoặc `today == date+1` khi `end <= start`); sai ngày khác →
+  `"Mã {code} không hiệu lực hôm nay (đặt {date} {start}→{end})"`; hết hạn đổi
+  sang so datetime đầy đủ `nowStr > expires_at` (thay `nowTime > end_time` string
+  HH:mm — sai khi qua đêm) → đánh `expired` + trả spot; message expired đổi
+  sang `"(quá 20 phút sau giờ kết thúc)"` (cũ "giờ bắt đầu" — khớp expires mới).
+- Sweep (`src/main/db.ts` `sweepExpiredReservations` + pre-check-in): KHÔNG đổi
+  logic (thuần `expires_at < datetime('now')` nên đúng cả qua đêm) — chỉ sửa
+  comment `start+20p` → `giờ kết thúc + 20p`, ghi rõ không giới hạn khung giờ.
+- Helpers mới (`ipc-handlers.ts`): `reservationDurationMin` (qua đêm +24h),
+  `nextDayOf` (YYYY-MM-DD +1, UTC), `addMinutesToDateTime` (datetime + phút,
+  tràn ngày); giữ `plusMinutesHHMM` cho case cùng ngày. Types
+  (`src/shared/types.ts` `Reservation`): `date` = ngày bắt đầu, `start/end`
+  mọi giờ 24/24 + qua đêm, `expires_at` = kết thúc +20p. Contract
+  (`api-contract.md` §13): đồng bộ 24/24 + qua đêm + expires mới.
+- DB (KHÔNG tự sửa — giao @database): 3 CHECK trong
+  `specs/migration-004-reservations.sql` + `specs/schema.sql` (bảng
+  `reservations`) đang CHẶN đặt qua đêm / ngoài 06–22, cần migration mới gợi ý
+  `specs/migration-008-reservations-24h.sql` (rebuild bảng kiểu DB-003, giữ dữ
+  liệu + 4 index + trigger):
+  1. `CHECK (end_time > start_time)` — chặn end <= start (qua đêm).
+  2. `CHECK (start_time >= '06:00' AND end_time <= '22:00')` — chặn ngoài khung.
+  3. `CHECK ((strftime('%s','2000-01-01 '||end_time||':00')-strftime('%s',
+     '2000-01-01 '||start_time||':00')) BETWEEN 3600 AND 14400)` — duration cùng
+     ngày 1–4h, chặn qua đêm + chặn 15–59p (mới 15p–4h). Thay bằng: bỏ CHECK 2,
+     CHECK 1 cho phép `end_time != start_time`, CHECK 3 tính qua đêm
+     (`CASE WHEN end>start THEN diff ELSE diff+86400 END BETWEEN 900 AND 14400`).
+  Code mới tương thích DB cũ cho lượt cùng ngày 1–4h trong 06–22; lượt qua đêm /
+  15–59p / ngoài khung CHỜ migration-008 mới INSERT được.
+- GHI CHÚ cho @frontend: time input cho phép mọi giờ + end <= start (qua đêm);
+  countdown nên dùng `expires_at` (giờ kết thúc +20p, có thể sang hôm sau) thay
+  vì `end_time` cùng ngày; poll 60s giữ nguyên.
+
+### Verification (BE-019)
+
+- `npx tsc --noEmit` → **pass** (không lỗi type; `plusMinutesHHMM` giữ lại cho
+  case cùng ngày nên không unused).
+- Không `console.log`; không đổi response envelope; không đụng
+  renderer/mobile/schema SQL (chỉ liệt kê migration-008 cho @database).
+- Chưa chạy runtime (better-sqlite3 smoke cần DB đã migration-008 cho case qua
+  đêm; DB hiện tại CHECK cũ vẫn chặn INSERT qua đêm / 15–59p / ngoài 06–22):
+  đặt 23:00→01:00 qua đêm OK + quá khứ → lỗi Việt mới chỉ verify bằng đọc code.
+- **Status: partially_verified** (typecheck pass; runtime qua đêm chờ
+  migration-008 + smoke có DB mới).
+
+## BE-020 — Runner migration-008 (nối DB-008)
+
+- `src/main/db.ts` → `runMigration008()` sau 007 trong `openDatabase()` (thứ tự 002 → … → 008): detect CHECK mới (`BETWEEN 900 AND 14400` trong `sqlite_master` của `reservations`) thì skip không backup (DB mới bootstrap `schema.sql` đã gộp v008); thiếu → checkpoint WAL + copy `parking.db` → `parking.db.bak-008`, `exec` nguyên file `specs/migration-008-reservations-24h.sql`, rồi `foreign_key_check` phải sạch. Idempotent 2 lớp — chạy N lần không lỗi.

@@ -30,6 +30,10 @@
 --       `permissions` TEXT (JSON 5 flags S4 staff-area.md:
 --       checkin/pass_sale/report_self/profile_self/reservation, 0|1;
 --       NULL = full staff cũ, tương thích ngược, không backfill).
+--     - v008 (migration-008-reservations-24h): nới 3 CHECK bảng `reservations`
+--       → giữ chỗ 24/24 + qua đêm (BE-019): BỎ khung 06:00–22:00,
+--       `end != start` (end < start = qua đêm), duration qua đêm
+--       `CASE ... BETWEEN 900 AND 14400` (15p–4h).
 -- ============================================================================
 
 PRAGMA foreign_keys = ON;
@@ -193,10 +197,15 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 
 -- ----------------------------------------------------------------------------
--- 9. reservations — đặt chỗ trước của khách (P4 customer-area, V1 tối thiểu).
+-- 9. reservations — đặt chỗ trước của khách (P4 customer-area).
 --    v004: bảng mới từ specs/migration-004-reservations.sql (DB cũ chạy file đó).
---    * Chỉ giữ chỗ trong ngày (date = today, backend ép); khung 1–4h, bãi
---      06:00–22:00 (CHECK DB). Quá ~20p không check-in → sweep job đánh expired.
+--    v008 (BE-019, DB cũ chạy specs/migration-008-reservations-24h.sql):
+--      giữ chỗ 24/24 + qua đêm — BỎ khung 06:00–22:00; `end_time != start_time`
+--      (end < start = qua đêm sang hôm sau, duration +24h ở CHECK/app);
+--      duration 15p–4h (`CASE WHEN end>start THEN diff ELSE diff+86400 END
+--      BETWEEN 900 AND 14400`); `date` = NGÀY BẮT ĐẦU (backend ép = today);
+--      `expires_at` = giờ KẾT THÚC + ~20p (datetime đầy đủ, tràn ngày khi qua
+--      đêm — sweep job dùng). Quá ~20p không check-in → sweep đánh expired.
 --    * vehicle_id NULLABLE: đặt theo SĐT + biển số text khi xe chưa có trong
 --      hệ thống; lúc check-in staff upsert vehicle rồi link sau.
 --    * Quota ≤ 2 pending|active/customer: backend COUNT trước INSERT
@@ -215,23 +224,25 @@ CREATE TABLE IF NOT EXISTS reservations (
   customer_phone TEXT NOT NULL DEFAULT '',
   zone_id        INTEGER NOT NULL REFERENCES parking_zones(id) ON DELETE RESTRICT ON UPDATE CASCADE,
   spot_id        INTEGER NULL REFERENCES parking_spots(id) ON DELETE SET NULL ON UPDATE CASCADE,
-  date           TEXT NOT NULL
+  date           TEXT NOT NULL -- 'YYYY-MM-DD' (= NGÀY BẮT ĐẦU, backend ép = today)
                  CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  start_time     TEXT NOT NULL
+  start_time     TEXT NOT NULL -- 'HH:mm', mọi giờ 24/24 (v008: bỏ khung 06–22)
                  CHECK (start_time GLOB '[0-9][0-9]:[0-9][0-9]'),
-  end_time       TEXT NOT NULL
+  end_time       TEXT NOT NULL -- 'HH:mm'; end <= start = qua đêm (hôm sau)
                  CHECK (end_time GLOB '[0-9][0-9]:[0-9][0-9]'),
   status         TEXT NOT NULL DEFAULT 'pending'
                  CHECK (status IN ('pending', 'active', 'completed', 'cancelled', 'expired')),
-  expires_at     TEXT NOT NULL,
+  expires_at     TEXT NOT NULL, -- v008: ISO8601 = giờ KẾT THÚC + ~20p (tràn ngày khi qua đêm)
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  CHECK (end_time > start_time),
-  CHECK (start_time >= '06:00' AND end_time <= '22:00'),
-  CHECK (
-    (strftime('%s', '2000-01-01 ' || end_time || ':00')
-     - strftime('%s', '2000-01-01 ' || start_time || ':00'))
-    BETWEEN 3600 AND 14400
+  CHECK (end_time != start_time), -- v008: chỉ chặn end == start; end < start = qua đêm
+  CHECK ( -- v008: duration qua đêm 15p (900s)–4h (14400s)
+    CASE WHEN end_time > start_time
+      THEN (strftime('%s', '2000-01-01 ' || end_time || ':00')
+            - strftime('%s', '2000-01-01 ' || start_time || ':00'))
+      ELSE (strftime('%s', '2000-01-01 ' || end_time || ':00')
+            - strftime('%s', '2000-01-01 ' || start_time || ':00') + 86400)
+    END BETWEEN 900 AND 14400
   )
 );
 

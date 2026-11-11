@@ -210,7 +210,7 @@ const customerSessionSeeds: Array<CustomerSessionRow & { phone: string }> = [
   { ticket_code: 'T-20261013-0001', license_plate: '51H-12345', zone_code: 'A', zone_name: 'Khu A — Ô tô', check_in_at: '2026-10-13 10:15:00', check_out_at: '2026-10-13 19:45:00', total_fee: 50000, monthly_pass_id: null, is_monthly: 0, payment_method: 'transfer', phone: '0912345678' },
 ];
 
-// FE-016 mock P4 (nối BE-011 `customer:reserve*`): giữ chỗ trong ngày.
+// FE-016 mock P4 (nối BE-011 `customer:reserve*`, cập nhật BE-019 24/24 + qua đêm).
 // Quota ≤ 2 pending/customer (mirror backend COUNT), mã R-YYYYMMDD-XXXX,
 // expires_at = start + 20p. Check-in bằng mã consume pending → completed.
 const reservations: Reservation[] = [];
@@ -1101,18 +1101,22 @@ export const mockApi: RendererApi = {
     if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) {
       return { ok: false, error: 'Vui lòng chọn giờ bắt đầu và kết thúc.' };
     }
-    if (start < '06:00' || end > '22:00' || !(start < end)) {
-      return { ok: false, error: 'Khung giờ phải trong 06:00–22:00, giờ kết thúc sau giờ bắt đầu.' };
+    if (start === end) {
+      return { ok: false, error: 'Giờ kết thúc phải sau giờ bắt đầu.' };
     }
-    const dur = toMinutes(end) - toMinutes(start);
-    if (dur < 60 || dur > 240) {
-      return { ok: false, error: 'Thời gian giữ từ 1 đến 4 giờ.' };
+    // 24/24 (BE-019): mọi giờ đều được, end <= start = qua đêm.
+    const rawDur = toMinutes(end) - toMinutes(start);
+    const dur = rawDur > 0 ? rawDur : rawDur + 24 * 60;
+    if (dur < 15 || dur > 240) {
+      return { ok: false, error: 'Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ.' };
     }
     const day = todayLocal();
     const code = `R-${day.replace(/-/g, '')}-${String(reservationSeq++).padStart(4, '0')}`;
+    // expires_at = giờ kết thúc + 20p, tự tràn ngày khi qua đêm (mirror BE-019).
     const exp = new Date(`${day}T${start}:00`);
-    exp.setMinutes(exp.getMinutes() + 20);
+    exp.setMinutes(exp.getMinutes() + (rawDur > 0 ? rawDur : rawDur + 24 * 60) + 20);
     const p = (n: number): string => String(n).padStart(2, '0');
+    const expDay = `${exp.getFullYear()}-${p(exp.getMonth() + 1)}-${p(exp.getDate())}`;
     const row: Reservation = {
       id: 2000 + reservations.length,
       code,
@@ -1126,7 +1130,7 @@ export const mockApi: RendererApi = {
       start_time: start,
       end_time: end,
       status: 'pending',
-      expires_at: `${day} ${p(exp.getHours())}:${p(exp.getMinutes())}:00`,
+      expires_at: `${expDay} ${p(exp.getHours())}:${p(exp.getMinutes())}:00`,
       created_at: `${day} 10:00:00`,
       updated_at: `${day} 10:00:00`,
     };

@@ -1,15 +1,23 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/format.dart';
+import '../core/reservations.dart';
 import '../core/tokens.dart';
+import '../core/validators.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
-int _toMin(TimeOfDay t) => t.hour * 60 + t.minute;
-
-/// Đặt chỗ trong ngày (P4 thu gọn 1 cột) — form + list "Giữ chỗ của tôi".
+/// Đặt chỗ 24/24 + qua đêm (MO-012, nối BE-019 + FE-023 desktop).
+/// Mode mặc định "đặt nhanh": Khu + Biển số (prefill xe đầu tiên) +
+/// chips 1/2/3/4h + "Bắt đầu: ngay bây giờ" + "Giữ chỗ ngay".
+/// Link "Chỉnh giờ chi tiết" mở form Từ/Đến tay (qua đêm được).
+/// KHÔNG ô nhập giờ ở mode nhanh, KHÔNG clamp/khóa theo giờ.
 class ReservationsScreen extends ConsumerStatefulWidget {
   const ReservationsScreen({super.key, this.zoneId});
 
@@ -20,20 +28,55 @@ class ReservationsScreen extends ConsumerStatefulWidget {
       _ReservationsScreenState();
 }
 
-class _ReservationsScreenState
-    extends ConsumerState<ReservationsScreen> {
+const _quickDurations = [60, 120, 180, 240]; // 1h / 2h / 3h / 4h
+
+class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   int? _zoneId;
-  TimeOfDay _from = const TimeOfDay(hour: 9, minute: 0);
-  TimeOfDay _to = const TimeOfDay(hour: 11, minute: 0);
+  bool _quick = true;
+  int _duration = 120; // default 2h (như desktop FE-023)
+  final _plate = TextEditingController();
+  bool _plateCustom = false;
+  String? _prefilledFor;
+  late TimeOfDay _from;
+  late TimeOfDay _to;
   bool _saving = false;
   String? _formErr;
   int _reload = 0;
+  int _pendingCount = 0;
+  List<ZoneAvailability> _zones = [];
+  DateTime _now = DateTime.now();
+  Timer? _tick;
 
   @override
   void initState() {
     super.initState();
     _zoneId = widget.zoneId;
+    final n = TimeOfDay.now();
+    _from = n;
+    final endMin = n.hour * 60 + n.minute + 120;
+    _to = TimeOfDay(hour: (endMin ~/ 60) % 24, minute: endMin % 60);
+    // Countdown tick 30s + poll 60s (BE-019: poll giữ nguyên).
+    var polls = 0;
+    _tick = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      polls++;
+      setState(() {
+        _now = DateTime.now();
+        if (polls % 2 == 0) _reload++; // poll 60s
+      });
+    });
   }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    _plate.dispose();
+    super.dispose();
+  }
+
+  int get _quickFromMin => _now.hour * 60 + _now.minute;
+  int get _quickToMin => (_quickFromMin + _duration) % 1440;
+  bool get _quickOvernight => isOvernight(_quickFromMin, _quickToMin);
 
   Future<void> _pick(bool isFrom) async {
     final v = await showTimePicker(
@@ -52,51 +95,150 @@ class _ReservationsScreenState
     }
   }
 
-  Future<void> _submit(AppUser me) async {
+  Future<void> _submit(AppUser me, {required bool quick}) async {
     setState(() {
       _saving = true;
       _formErr = null;
     });
     try {
-      final repo = ref.read(customerRepoProvider);
-      final row = await repo.createReservation(
-        userId: me.id,
-        phone: me.phone ?? me.username,
-        zoneId: _zoneId!,
-        fromMin: _toMin(_from),
-        toMin: _toMin(_to),
-      );
+      final clean = Validators.normalizePlate(_plate.text);
+      if (Validators.plate(clean) != null) {
+        throw const RepoException(
+            'INVALID_PLATE', 'Biển số chưa đúng — VD: 51H-12345.');
+      }
+      if (_zoneId == null) {
+        throw const RepoException('NO_ZONE', 'Vui lòng chọn khu vực.');
+      }
+      // Quick: start = ngay bây giờ (chốt lúc bấm nút) — FE-023.
+      final fromMin = quick
+          ? DateTime.now().hour * 60 + DateTime.now().minute
+          : _from.hour * 60 + _from.minute;
+      final toMin =
+          quick ? (fromMin + _duration) % 1440 : _to.hour * 60 + _to.minute;
+      final row = await ref.read(customerRepoProvider).createReservation(
+            userId: me.id,
+            phone: me.phone ?? me.username,
+            plate: clean,
+            zoneId: _zoneId!,
+            fromMin: fromMin,
+            toMin: toMin,
+          );
       if (!mounted) return;
       setState(() => _reload++);
-      showAppSheet(
-        context,
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text('Giữ chỗ thành công',
-                style: AppText.cardTitle),
-            const SizedBox(height: AppGaps.s8),
-            PlateText(row.code, size: 20),
-            const SizedBox(height: AppGaps.s8),
-            Text(
-              'Khu ${row.zoneCode} · ${row.startTime}–${row.endTime} '
-              '· Hết hạn lúc ${row.expiresAt}',
-              style: AppText.body,
-            ),
-            const SizedBox(height: AppGaps.s16),
-            PrimaryButton(
-              label: 'Đã hiểu',
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-          ],
-        ),
-      );
+      _showSuccess(row);
     } on RepoException catch (e) {
       setState(() => _formErr = e.message);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  void _showSuccess(ReservationRow row) {
+    final overnight = isOvernight(
+      _toMinOf(row.startTime),
+      _toMinOf(row.endTime),
+    );
+    showAppSheet(
+      context,
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Giữ chỗ thành công', style: AppText.cardTitle),
+          const SizedBox(height: AppGaps.s8),
+          PlateText(row.code, size: 20),
+          const SizedBox(height: AppGaps.s8),
+          Text(
+            'Khu ${row.zoneCode} · ${row.startTime}–${row.endTime}'
+            '${overnight ? ' (qua đêm)' : ''} · ${row.date}'
+            '\nTự hủy sau 20 phút quá giờ kết thúc nếu chưa check-in.'
+            '\nHết hạn lúc ${row.expiresAt.length >= 16 ? row.expiresAt.substring(0, 16) : row.expiresAt}',
+            style: AppText.body,
+          ),
+          const SizedBox(height: AppGaps.s16),
+          PrimaryButton(
+            label: 'Copy mã',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: row.code));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Đã sao chép mã ${row.code}.')),
+              );
+            },
+          ),
+          const SizedBox(height: AppGaps.s8),
+          PrimaryButton(
+            label: 'Đã hiểu',
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  int _toMinOf(String hhmm) {
+    final parts = hhmm.split(':');
+    if (parts.length != 2) return 0;
+    return (int.tryParse(parts[0]) ?? 0) * 60 +
+        (int.tryParse(parts[1]) ?? 0);
+  }
+
+  Future<void> _confirmCancel(ReservationRow row) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hủy giữ chỗ'),
+        content: Text(
+            'Hủy vé giữ chỗ ${row.code}? Ô giữ sẽ trả về bãi ngay.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Ở lại'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(
+                foregroundColor: AppColors.danger),
+            child: const Text('Hủy giữ chỗ'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final me = ref.read(sessionProvider);
+    if (me == null) return;
+    try {
+      await ref
+          .read(customerRepoProvider)
+          .cancelReservation(row.code, me.id);
+      if (!mounted) return;
+      setState(() => _reload++);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã hủy vé giữ chỗ ${row.code}')),
+      );
+    } on RepoException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    }
+  }
+
+  void _refill(ReservationRow row) {
+    ZoneAvailability? match;
+    for (final z in _zones) {
+      if (z.zoneCode == row.zoneCode) match = z;
+    }
+    setState(() {
+      _zoneId = match?.zoneId; // null → tự chọn khu còn chỗ khi tải xong
+      _plateCustom = false;
+      _plate.text = row.licensePlate;
+      _quick = false; // đặt lại theo khung giờ cụ thể của vé cũ
+      final f = _toMinOf(row.startTime);
+      final t = _toMinOf(row.endTime);
+      _from = TimeOfDay(hour: f ~/ 60, minute: f % 60);
+      _to = TimeOfDay(hour: t ~/ 60, minute: t % 60);
+      _formErr = null;
+    });
   }
 
   @override
@@ -109,11 +251,11 @@ class _ReservationsScreenState
     if (me == null) {
       return const Center(child: Text('Đăng nhập để đặt chỗ.'));
     }
-    final dur = _toMin(_to) - _toMin(_from);
+    final phone = me.phone ?? me.username;
 
     return Scaffold(
-      appBar: AppBar(
-          title: const Text('Đặt chỗ', style: AppText.appBar)),
+      appBar:
+          AppBar(title: const Text('Đặt chỗ', style: AppText.appBar)),
       body: FutureBuilder<List<ReservationRow>>(
         future: repo.myReservations(me.id),
         builder: (context, snap) {
@@ -133,8 +275,9 @@ class _ReservationsScreenState
             );
           }
           final rows = snap.data ?? <ReservationRow>[];
-          final pending =
+          _pendingCount =
               rows.where((r) => r.status == 'pending').length;
+          final quotaReached = _pendingCount >= 2;
           return ListView(
             padding: const EdgeInsets.all(AppGaps.s16),
             children: [
@@ -142,68 +285,191 @@ class _ReservationsScreenState
                 child: Padding(
                   padding: const EdgeInsets.all(AppGaps.s16),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.stretch,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text('Giữ chỗ trong ngày',
+                      const Text('Giữ chỗ 24/24',
                           style: AppText.cardTitle),
+                      const SizedBox(height: AppGaps.s4),
+                      const Text(
+                        'Mở cả ngày lẫn đêm — qua đêm tự tính sang hôm sau.',
+                        style: AppText.helper,
+                      ),
                       const SizedBox(height: AppGaps.s12),
-                      FutureBuilder<List<ParkingZone>>(
-                        future: zonesRepo.zones(),
+                      FutureBuilder<List<ZoneAvailability>>(
+                        future: zonesRepo.availability(),
                         builder: (context, zSnap) {
                           final zones = zSnap.data ?? [];
+                          _zones = zones;
                           if (_zoneId == null && zones.isNotEmpty) {
-                            _zoneId = zones.first.id;
+                            final withFree = zones.where(
+                                (z) => z.freeSpots > 0);
+                            _zoneId = (withFree.isEmpty
+                                    ? zones.first
+                                    : withFree.first)
+                                .zoneId;
                           }
                           return DropdownButtonFormField<int>(
                             key: ValueKey(_zoneId),
                             initialValue: _zoneId,
                             decoration: const InputDecoration(
-                                labelText: 'Khu'),
+                                labelText: 'Khu vực *'),
                             items: zones
-                                .map((z) =>
-                                    DropdownMenuItem<int>(
-                                      value: z.id,
+                                .map((z) => DropdownMenuItem<int>(
+                                      value: z.zoneId,
+                                      enabled: z.freeSpots > 0,
                                       child: Text(
-                                          '${z.code} · ${z.name}'),
+                                          'Khu ${z.zoneCode} — còn ${z.freeSpots}'),
                                     ))
                                 .toList(),
-                            onChanged: (v) =>
-                                setState(() => _zoneId = v),
+                            onChanged: (v) => setState(() {
+                              _zoneId = v;
+                              _formErr = null;
+                            }),
                           );
                         },
                       ),
                       const SizedBox(height: AppGaps.s12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                  minimumSize:
-                                      const Size(48, 48)),
-                              onPressed: () => _pick(true),
-                              child: Text('Từ ${_from.format(context)}'),
+                      FutureBuilder<List<VehicleRow>>(
+                        future: repo.myVehicles(phone),
+                        builder: (context, vSnap) {
+                          final vehicles =
+                              vSnap.data ?? <VehicleRow>[];
+                          if (_prefilledFor != phone &&
+                              vehicles.isNotEmpty &&
+                              _plate.text.isEmpty) {
+                            _prefilledFor = phone;
+                            _plate.text =
+                                vehicles.first.licensePlate;
+                          }
+                          if (vehicles.length > 1 &&
+                              !_plateCustom) {
+                            final plates = vehicles
+                                .map((v) => v.licensePlate)
+                                .toList();
+                            return DropdownButtonFormField<
+                                String>(
+                              initialValue: plates
+                                      .contains(_plate.text)
+                                  ? _plate.text
+                                  : null,
+                              decoration: const InputDecoration(
+                                labelText: 'Biển số xe *',
+                                helperText:
+                                    'Biển số đối soát khi check-in bằng mã giữ chỗ',
+                              ),
+                              items: [
+                                ...plates.map((p) =>
+                                    DropdownMenuItem<String>(
+                                      value: p,
+                                      child: PlateText(p,
+                                          size: 14),
+                                    )),
+                                const DropdownMenuItem<String>(
+                                  value: '__custom',
+                                  child:
+                                      Text('Biển số khác…'),
+                                ),
+                              ],
+                              onChanged: (v) {
+                                if (v == null) return;
+                                setState(() {
+                                  if (v == '__custom') {
+                                    _plateCustom = true;
+                                    _plate.clear();
+                                  } else {
+                                    _plate.text = v;
+                                  }
+                                  _formErr = null;
+                                });
+                              },
+                            );
+                          }
+                          return TextField(
+                            controller: _plate,
+                            textCapitalization:
+                                TextCapitalization.characters,
+                            decoration: const InputDecoration(
+                              labelText: 'Biển số xe *',
+                              hintText: 'VD 51H-12345',
+                              helperText:
+                                  'Biển số đối soát khi check-in bằng mã giữ chỗ',
                             ),
-                          ),
-                          const SizedBox(width: AppGaps.s8),
-                          Expanded(
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                  minimumSize:
-                                      const Size(48, 48)),
-                              onPressed: () => _pick(false),
-                              child: Text('Đến ${_to.format(context)}'),
+                            onChanged: (_) => setState(
+                                () => _formErr = null),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: AppGaps.s12),
+                      if (_quick) ...[
+                        const Text('Thời lượng *',
+                            style: AppText.body),
+                        const SizedBox(height: AppGaps.s8),
+                        Wrap(
+                          spacing: AppGaps.s8,
+                          children: _quickDurations
+                              .map((d) => ChoiceChip(
+                                    label: Text('${d ~/ 60}h'),
+                                    selected: _duration == d,
+                                    onSelected: (_) =>
+                                        setState(() {
+                                      _duration = d;
+                                      _formErr = null;
+                                    }),
+                                  ))
+                              .toList(),
+                        ),
+                        const SizedBox(height: AppGaps.s8),
+                        Text(
+                          'Bắt đầu: ngay bây giờ (${fmtTime(_now)})'
+                          ' → kết thúc dự kiến ${hhmm(_quickFromMin + _duration)}'
+                          ' (${fmtDur(_duration)})'
+                          '${_quickOvernight ? ' · qua đêm' : ''}',
+                          style: AppText.helper,
+                        ),
+                      ] else ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                    minimumSize:
+                                        const Size(48, 48)),
+                                onPressed: () => _pick(true),
+                                child: Text(
+                                    'Từ ${_from.format(context)}'),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: AppGaps.s8),
-                      Text(
-                        dur > 0
-                            ? '${dur ~/ 60}h${dur % 60 == 0 ? '' : '${dur % 60}p'} · trong 06:00–22:00'
-                            : 'Chọn khoảng 1–4 giờ',
-                        style: AppText.helper,
-                      ),
+                            const SizedBox(width: AppGaps.s8),
+                            Expanded(
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                    minimumSize:
+                                        const Size(48, 48)),
+                                onPressed: () => _pick(false),
+                                child: Text(
+                                    'Đến ${_to.format(context)}'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: AppGaps.s8),
+                        Builder(builder: (_) {
+                          final f = _from.hour * 60 +
+                              _from.minute;
+                          final t =
+                              _to.hour * 60 + _to.minute;
+                          final dur =
+                              reservationDurationMin(f, t);
+                          final ok =
+                              dur >= 15 && dur <= 4 * 60;
+                          return Text(
+                            '${fmtDur(dur)}'
+                            '${isOvernight(f, t) ? ' · qua đêm (sang hôm sau)' : ''}'
+                            '${ok ? '' : ' · mỗi lượt 15 phút–4 giờ'}',
+                            style: AppText.helper,
+                          );
+                        }),
+                      ],
                       if (_formErr != null) ...[
                         const SizedBox(height: AppGaps.s8),
                         Text(_formErr!,
@@ -211,22 +477,49 @@ class _ReservationsScreenState
                                 color: AppColors.danger)),
                       ],
                       const SizedBox(height: AppGaps.s12),
-                      PrimaryButton(
-                        label: _saving ? 'Đang giữ…' : 'Giữ chỗ',
-                        loading: _saving,
-                        onPressed: _zoneId == null || pending >= 2
-                            ? null
-                            : () => _submit(me),
-                      ),
-                      if (pending >= 2)
-                        const Padding(
-                          padding:
-                              EdgeInsets.only(top: AppGaps.s8),
-                          child: Text(
-                            'Bạn đã có 2 chỗ đang giữ.',
-                            style: AppText.helper,
+                      if (quotaReached)
+                        const Text(
+                          'Bạn đã có 2 chỗ đang giữ — hủy bớt trước khi giữ thêm.',
+                          style: AppText.helper,
+                        )
+                      else if (_quick) ...[
+                        PrimaryButton(
+                          label:
+                              _saving ? 'Đang giữ…' : 'Giữ chỗ ngay',
+                          loading: _saving,
+                          onPressed: () => _submit(me, quick: true),
+                        ),
+                        const SizedBox(height: AppGaps.s8),
+                        Center(
+                          child: TextButton(
+                            onPressed: () => setState(() {
+                              _quick = false;
+                              _formErr = null;
+                            }),
+                            child: const Text(
+                                'Chỉnh giờ chi tiết'),
                           ),
                         ),
+                      ] else ...[
+                        PrimaryButton(
+                          label:
+                              _saving ? 'Đang giữ…' : 'Giữ chỗ',
+                          loading: _saving,
+                          onPressed: () =>
+                              _submit(me, quick: false),
+                        ),
+                        const SizedBox(height: AppGaps.s8),
+                        Center(
+                          child: TextButton(
+                            onPressed: () => setState(() {
+                              _quick = true;
+                              _formErr = null;
+                            }),
+                            child:
+                                const Text('Về đặt nhanh'),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -239,13 +532,15 @@ class _ReservationsScreenState
                 const EmptyView(
                   title: 'Chưa có chỗ giữ nào',
                   hint:
-                      'Chọn khu + giờ ở trên để giữ chỗ trong ngày.',
+                      'Chọn khu + thời lượng ở trên rồi bấm Giữ chỗ ngay — '
+                      'mã R-… dùng để check-in tại quầy, cả đêm.',
                 )
               else
                 ...rows.map((r) => _ReservationCard(
                       row: r,
-                      onCancelled: () =>
-                          setState(() => _reload++),
+                      now: _now,
+                      onCancel: () => _confirmCancel(r),
+                      onRefill: () => _refill(r),
                     )),
             ],
           );
@@ -255,47 +550,120 @@ class _ReservationsScreenState
   }
 }
 
-class _ReservationCard extends ConsumerWidget {
-  const _ReservationCard({required this.row, required this.onCancelled});
+class _ReservationCard extends StatelessWidget {
+  const _ReservationCard({
+    required this.row,
+    required this.now,
+    required this.onCancel,
+    required this.onRefill,
+  });
 
   final ReservationRow row;
-  final VoidCallback onCancelled;
+  final DateTime now;
+  final VoidCallback onCancel;
+  final VoidCallback onRefill;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    final isPending = row.status == 'pending';
+    final mins =
+        isPending ? minutesToExpiry(row.expiresAt, now) : null;
+    final soon = mins != null && mins <= 15;
+    final expHint = row.expiresAt.length >= 16
+        ? row.expiresAt.substring(11, 16)
+        : row.expiresAt;
     return Card(
-      child: ListTile(
-        minVerticalPadding: AppGaps.s12,
-        title: PlateText(row.code, size: 14),
-        subtitle: Text(
-            'Khu ${row.zoneCode} · ${row.startTime}–${row.endTime} · ${row.date}'),
-        trailing: row.status == 'pending'
-            ? SizedBox(
-                width: 48,
-                height: 48,
-                child: IconButton(
-                  tooltip: 'Hủy giữ chỗ',
-                  onPressed: () async {
-                    final me = ref.read(sessionProvider);
-                    if (me == null) return;
-                    await ref
-                        .read(customerRepoProvider)
-                        .cancelReservation(row.code, me.id);
-                    onCancelled();
-                  },
-                  icon: const Icon(Icons.cancel_outlined,
-                      color: AppColors.danger),
-                ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppGaps.s12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                    child: PlateText(row.code, size: 14)),
+                if (isPending)
+                  soon
+                      ? AppBadge.warning('Sắp hết')
+                      : AppBadge.success('Giữ chỗ')
+                else
+                  _statusBadge(row.status),
+              ],
+            ),
+            const SizedBox(height: AppGaps.s4),
+            Text(
+              'Khu ${row.zoneCode} · ${row.startTime}–${row.endTime}'
+              ' · ${row.date}'
+              '${row.licensePlate.isNotEmpty ? ' · ${row.licensePlate}' : ''}',
+              style: AppText.body,
+            ),
+            if (isPending && mins != null) ...[
+              const SizedBox(height: AppGaps.s4),
+              Text(
+                mins > 0
+                    ? 'Hết hạn sau ${mins}p · Hết hạn lúc $expHint'
+                    : 'Đã quá giờ hẹn — hệ thống sẽ tự hủy',
+                style: AppText.helper,
+              ),
+            ],
+            const SizedBox(height: AppGaps.s8),
+            if (isPending)
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                          minimumSize:
+                              const Size(48, 48)),
+                      onPressed: () {
+                        Clipboard.setData(
+                            ClipboardData(text: row.code));
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(
+                          SnackBar(
+                              content: Text(
+                                  'Đã sao chép mã ${row.code}.')),
+                        );
+                      },
+                      child: const Text('Copy mã'),
+                    ),
+                  ),
+                  const SizedBox(width: AppGaps.s8),
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        minimumSize:
+                            const Size(48, 48),
+                        foregroundColor: AppColors.danger,
+                      ),
+                      onPressed: onCancel,
+                      child: const Text('Hủy'),
+                    ),
+                  ),
+                ],
               )
-            : _statusBadge(row.status),
+            else
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48)),
+                onPressed: () {
+                  onRefill();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text(
+                            'Đã nạp lại khung giờ vé cũ — chỉnh lại rồi Giữ chỗ.')),
+                  );
+                },
+                child: const Text('Đặt lại'),
+              ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _statusBadge(String s) {
     switch (s) {
-      case 'pending':
-        return AppBadge.warning('Giữ');
       case 'active':
         return AppBadge.info('Đã nhận');
       case 'completed':

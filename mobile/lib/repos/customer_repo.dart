@@ -1,4 +1,5 @@
 import '../core/fee.dart';
+import '../core/reservations.dart';
 import '../core/validators.dart';
 import '../db/app_db.dart';
 import '../models/entities.dart';
@@ -288,14 +289,22 @@ WHERE r.user_id = ? ORDER BY r.date, r.start_time
         []);
   }
 
+  /// Đặt chỗ 24/24 + qua đêm (BE-019): `toMin <= fromMin` = sang hôm sau,
+  /// duration 15p–4h, `expires_at` = giờ KẾT THÚC + 20p (tràn ngày).
+  /// `date` = ngày bắt đầu (= today). Không khung giờ, không clamp.
   Future<ReservationRow> createReservation({
     required int userId,
     required String phone,
+    required String plate,
     required int zoneId,
     required int fromMin,
     required int toMin,
   }) async {
     final now = DateTime.now();
+    final cleanPlate = Validators.normalizePlate(plate);
+    if ((Validators.plate(cleanPlate)) != null) {
+      throw const RepoException('INVALID_PLATE', 'Biển số chưa đúng — VD: 51H-12345.');
+    }
     final err = Validators.slot(
       date: now,
       now: now,
@@ -324,21 +333,19 @@ WHERE r.user_id = ? ORDER BY r.date, r.start_time
         limit: 1,
       );
       if (free.isEmpty) {
-        throw const RepoException('ZONE_FULL', 'Khu đã đầy.');
+        throw const RepoException(
+            'ZONE_FULL', 'Khu vừa hết chỗ giữ — chọn khu khác.');
       }
-      String two(int v) => v.toString().padLeft(2, '0');
-      final start =
-          '${two(fromMin ~/ 60)}:${two(fromMin % 60)}';
-      final end = '${two(toMin ~/ 60)}:${two(toMin % 60)}';
+      final range = startEndOf(now, fromMin, toMin);
+      final start = hhmm(fromMin);
+      final end = hhmm(toMin);
       final code =
-          'R-${now.year}${two(now.month)}${two(now.day)}-${now.millisecondsSinceEpoch % 100000}';
-      final exp = now.add(const Duration(minutes: 20));
-      String stamp(DateTime n) =>
-          '${n.year}-${two(n.month)}-${two(n.day)} ${two(n.hour)}:${two(n.minute)}:${two(n.second)}';
+          'R-${now.year}${_two2(now.month)}${_two2(now.day)}-${now.millisecondsSinceEpoch % 100000}';
+      final exp = range.end.add(const Duration(minutes: 20));
       final id = await txn.insert('reservations', {
         'code': code,
         'user_id': userId,
-        'license_plate': '',
+        'license_plate': cleanPlate,
         'customer_phone': phone,
         'zone_id': zoneId,
         'spot_id': free.first['id'],
@@ -346,7 +353,7 @@ WHERE r.user_id = ? ORDER BY r.date, r.start_time
         'start_time': start,
         'end_time': end,
         'status': 'pending',
-        'expires_at': stamp(exp),
+        'expires_at': stampOf(exp),
         'pending_sync': 1,
       });
       await txn.update(
@@ -362,15 +369,17 @@ WHERE r.user_id = ? ORDER BY r.date, r.start_time
         id: id,
         code: code,
         zoneCode: z['code'] as String,
-        licensePlate: '',
+        licensePlate: cleanPlate,
         date: date,
         startTime: start,
         endTime: end,
         status: 'pending',
-        expiresAt: stamp(exp),
+        expiresAt: stampOf(exp),
       );
     });
   }
+
+  String _two2(int v) => v.toString().padLeft(2, '0');
 
   Future<void> cancelReservation(String code, int userId) async {
     final d = await _db.db;

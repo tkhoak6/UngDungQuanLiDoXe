@@ -87,3 +87,100 @@ spots demo + poll 30s giữ nguyên):
 
 - `npx tsc --noEmit` → **pass**. Không `console.log`. Không đụng main/DB.
 - Chưa chạy: click-through GUI (Electron/vite) — cần reviewer QA tay.
+
+---
+
+# FE-023 — Đặt nhanh 1 chạm (sửa form P4 desktop)
+
+## Vấn đề (screenshot user 21:09)
+
+Form cũ bắt nhập tay Từ/Đến giờ trong khung 06:00–22:00 — tối muộn gần như
+không đặt được, sai là báo đỏ. Khó dùng.
+
+## Cách sửa (chỉ `src/renderer/pages/MyReservationsPage.tsx`, KHÔNG đụng main/DB/IPC)
+
+- Mode mặc định **"Đặt nhanh"** (`quick=true`): Khu vực (select như cũ) +
+  Biển số (prefill xe đầu tiên từ `customer:vehicles`; >1 xe → dropdown +
+  option "Biển số khác…" mở ô nhập tay) + chips Thời lượng **1h/2h/3h/4h**
+  (default 2h) + dòng read-only "Bắt đầu: ngay bây giờ (HH:MM) → kết thúc
+  dự kiến HH:MM (X giờ)" + nút **"Giữ chỗ ngay"**. Không có ô nhập giờ.
+- Giờ bắt đầu = now (chốt lúc bấm nút), kết thúc = now + duration, kẹp
+  `22:00`: vượt → **tự rút vừa khung** + note vàng
+  "Đã rút còn X phút vì bãi đóng cửa 22:00." (vẫn Giữ chỗ được, không báo đỏ).
+- Hết room (< 30p tới 22:00, tức từ 21:30, hoặc ngoài 06:00–22:00) → note đỏ
+  "Hôm nay bãi sắp đóng cửa, quay lại sáng mai nhé." + **disable nút**
+  (không cho submit rồi mới lỗi).
+- Link **"Chỉnh giờ chi tiết"** (btn-ghost, `.link` không tồn tại trong
+  index.css) mở form Từ/Đến cũ — validate cũ giữ nguyên (`handleReserve`
+  không đổi). Link "Về đặt nhanh" để quay lại.
+- Giữ nguyên: quota 2 (chặn mềm + banner), countdown "Hết hạn sau Np" tick
+  30s, Hủy + Dialog xác nhận, poll 60s, My reservations list, success card
+  + Copy mã. `refill` ("Đặt lại") mở mode chi tiết với giờ của vé cũ.
+- Hằng số khung giờ: `OPEN_MIN=360`, `CLOSE_MIN=1320`, `MIN_KEEP_MIN=30`
+  (local trong file, không phát minh field IPC mới).
+
+## States / a11y
+
+- Loading/error/empty của list giữ nguyên. Note vàng `role="status"`,
+  note đỏ `role="alert"` (qua `Alert`). Chips `aria-pressed`, group có
+  `aria-labelledby`. Dòng giờ dự kiến `aria-live="polite"`. Nút disable khi
+  `busy || quickTooLate`.
+
+## Verification
+
+- `npx tsc --noEmit` → **pass** (EXIT:0). Không `console.log`.
+- `npm run build:renderer` (vite) → **built in 8.53s**, không restart app.
+- Logic đã self-review theo hợp đồng: 21:09 đặt 2h → end kẹp 22:00
+  (rút còn 51p + note vàng, vẫn Giữ chỗ được); ≥21:30 → disable + note đỏ;
+  giờ hành chính → đặt thẳng không note (validate server giữ nguyên chốt).
+- Chưa chạy: click-through GUI thật (Electron/vite) — cần designer QA tay.
+# FE-024 — Desktop đặt chỗ 24/24 (nối BE-019 + FE-023)
+
+## Thay đổi (chỉ `src/renderer/*`, KHÔNG đụng main/DB/mobile)
+
+- `pages/MyReservationsPage.tsx`:
+  - XÓA `OPEN_MIN/CLOSE_MIN/MIN_KEEP_MIN`, `quickTooLate/quickTrimmed/
+    quickEffective/quickEndMin`, note "bãi đóng cửa 22:00", note đỏ "quay lại
+    sáng mai", `min/max 06:00–22:00` trên 2 ô `time`, mọi message chứa
+    `06:00–22:00`.
+  - Quick mode: `start = now` (chốt lúc bấm nút), `end = now + duration`
+    (helper `addMinutesHHMM` tràn qua 0h) — KHÔNG clamp, KHÔNG disable theo
+    giờ; nút disable chỉ khi `busy`. Dòng dự kiến hiện
+    `Bắt đầu … → kết thúc … (X giờ)` + `(qua đêm)` khi tràn ngày.
+    Chips 1h/2h/3h/4h giữ nguyên (server cho 15p–4h nhưng chips đủ dùng).
+  - Detail mode: nhập tay mọi giờ, `end <= start` = qua đêm
+    (`isOvernight`/`durationMin` helpers, ngày picker = ngày bắt đầu);
+    validate mới — trùng giờ → `"Giờ kết thúc phải sau giờ bắt đầu."`;
+    duration ngoài 15p–4h → `"Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ."`;
+    quá khứ >15p giữ nguyên. Hint live dưới 2 ô giờ:
+    `Qua đêm: 23:00 hôm nay → 01:00 hôm sau (2 giờ).`
+  - Countdown/hết hạn theo `expires_at` server (giờ kết thúc +20p, có thể
+    sang hôm sau) — logic `minutesToExpiry` giữ nguyên, đã đúng cả qua đêm.
+  - Success card + từng row hiện `(qua đêm)` khi `end <= start`; success ghi
+    `Tự hủy lúc HH:MM (20 phút sau giờ kết thúc)` lấy từ `expires_at`.
+  - Subtitle `Giữ chỗ 24/24`, hint ngày
+    `khung qua đêm (VD 23:00→01:00) tính sang hôm sau`, EmptyState bỏ chữ
+    "trong hôm nay". `refill` ("Đặt lại") vẫn mở detail với giờ vé cũ.
+- `types.ts`: comment `Reservation` đồng bộ BE-019 (24/24, qua đêm,
+  `expires_at` = kết thúc +20p).
+- `lib/mockApi.ts` (`reserve`): mirror BE-019 — bỏ check 06–22, `start===end`
+  lỗi, duration qua đêm (+24h) 15p–4h, `expires_at` = end +20p với **ngày**
+  tràn đúng (`expDay` từ `Date`, không còn hardcode `day`).
+
+## States / a11y
+
+- Loading/error/empty, quota 2, Dialog hủy, poll 60s, tick 30s giữ nguyên.
+- Hint qua đêm `field-hint` + `aria-describedby`; lỗi validate `field-error`
+  `id="rsv-time-err"`; chips `aria-pressed`; giờ dự kiến `aria-live="polite"`.
+
+## Verification
+
+- `npx tsc --noEmit` → **pass** (EXIT:0). Không `console.log`.
+- `npm run build:renderer` (vite) → **built in 11.47s**, không restart app.
+- Logic overnight verify bằng node: `23:00 + 120p = 01:00`,
+  `durationMin(23:00→01:00) = 120`, `isOvernight = true` → đặt được,
+  countdown theo `expires_at` 01:20 hôm sau.
+- Chưa chạy: click-through GUI thật + runtime qua đêm cần DB đã
+  migration-008 (BE-019 note: DB cũ CHECK cũ vẫn chặn INSERT qua đêm —
+  chờ @database).
+

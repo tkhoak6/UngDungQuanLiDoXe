@@ -395,11 +395,11 @@ export interface Reservation {
   customer_phone: string;         // snapshot SĐT lúc đặt (pattern monthly_passes)
   zone_id: number;                // FK → parking_zones.id
   spot_id: number | null;         // FK → parking_spots.id, ô auto-pick (NULL = chỉ giữ theo khu)
-  date: string;                   // YYYY-MM-DD (= today ở V1, backend ép)
-  start_time: string;             // HH:mm, CHECK >= '06:00', end > start, duration 1–4h
-  end_time: string;               // HH:mm, CHECK <= '22:00'
+  date: string;                   // YYYY-MM-DD (= ngày bắt đầu, backend ép = today)
+  start_time: string;             // HH:mm, mọi giờ 24/24 (không giới hạn khung)
+  end_time: string;               // HH:mm, end <= start = qua đêm (hôm sau), duration 15p–4h
   status: ReservationStatus;      // pending ≡ spec 'held' (đang giữ)
-  expires_at: string;             // ISO8601 = start + ~20p (app tính, sweep job dùng)
+  expires_at: string;             // ISO8601 = giờ kết thúc + 20p (datetime đầy đủ, sweep dùng)
   created_at: string;
   updated_at: string;
 }
@@ -407,13 +407,13 @@ export interface Reservation {
 // IPC customer (mine-only: backend ép user_id = me.id, không nhận từ client)
 export interface CustomerReserveInput {
   zone_id: number;
-  date: string;                   // phải = today (V1), backend check
-  time_from: string;              // HH:mm → start_time
-  time_to: string;                // HH:mm → end_time
+  date: string;                   // backend ép = today (bỏ qua client); end qua đêm tự tràn ngày
+  time_from: string;              // HH:mm → start_time (mọi giờ 24/24)
+  time_to: string;                // HH:mm → end_time (<= from = qua đêm)
 }
 export interface CustomerReserveOutput {
   success: boolean;
-  data?: Reservation;             // kèm spot giữ + expires_at
+  data?: Reservation;             // kèm spot giữ + expires_at (= giờ kết thúc + 20p)
   error?: string;                 // 'ZONE_FULL' | 'QUOTA_EXCEEDED' (đã có 2 chỗ) |
                                   // 'INVALID_SLOT' (sai khung/ngoài giờ/quá khứ) | ...
 }
@@ -436,7 +436,9 @@ export interface CustomerReserveOutput {
   dùng `idx_res_status_expires`).
 - Quota/sweep/capacity dùng 4 index v004 (`idx_res_user_status_date`,
   `idx_res_zone_date_status`, `idx_res_status_expires`, `idx_res_vehicle`).
-  Migration: `./specs/migration-004-reservations.sql` (backup `.bak-004`).
+  Migration: `./specs/migration-004-reservations.sql` (backup `.bak-004`) +
+  `./specs/migration-008-reservations-24h.sql` (v008: 24/24 + qua đêm — bỏ khung
+  06–22, `end != start`, duration qua đêm 15p–4h; backup `.bak-008`).
 
 ---
 

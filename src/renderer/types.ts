@@ -442,8 +442,8 @@ export interface ShiftUpdateInput {
   end_time?: string; // 'HH:mm' (end < start = ca qua ngày)
   is_active?: 0 | 1;
 }
-// Customer area P4 (spec ./specs/customer-area.md §P4, nối BE-011) — mirrors
-// src/shared/types.ts. Chỉ giữ chỗ trong ngày (backend ép date = today).
+// Customer area P4 (spec ./specs/customer-area.md §P4, nối BE-011/BE-019) — mirrors
+// src/shared/types.ts. Đặt 24/24, end <= start = qua đêm (sang hôm sau).
 // pending (≡ spec 'held') ──check-in bằng mã──▶ completed (≡ used);
 // quá expires_at ──sweep──▶ expired; khách hủy ──▶ cancelled.
 export interface Reservation {
@@ -455,11 +455,11 @@ export interface Reservation {
   customer_phone: string;
   zone_id: number;
   spot_id: number | null;
-  date: string; // YYYY-MM-DD (= today ở V1)
-  start_time: string; // HH:mm, >= '06:00'
-  end_time: string; // HH:mm, <= '22:00', duration 1–4h
+  date: string; // YYYY-MM-DD (= today ở V1 = ngày bắt đầu)
+  start_time: string; // HH:mm, mọi giờ 24/24
+  end_time: string; // HH:mm, end <= start = qua đêm; duration 15p–4h
   status: ReservationStatus; // pending ≡ đang giữ
-  expires_at: string; // ISO8601 = start + ~20p
+  expires_at: string; // ISO8601 = giờ kết thúc + 20p (tràn ngày khi qua đêm)
   created_at: string;
   updated_at: string;
 }

@@ -77,6 +77,21 @@ const MIGRATION_006_BACKUP_SUFFIX = '.bak-006';
 const MIGRATION_007_FILE = 'migration-007-permissions.sql';
 const MIGRATION_007_BACKUP_SUFFIX = '.bak-007';
 
+const MIGRATION_008_FILE = 'migration-008-reservations-24h.sql';
+const MIGRATION_008_BACKUP_SUFFIX = '.bak-008';
+
+function needsMigration008(db: AppDb): boolean {
+  // DB mới (bootstrap schema.sql đã gộp v008) có CHECK mới → skip.
+  // DB cũ CHECK cũ (1–4h cùng ngày, khung 06–22) → migrate.
+  // Bảng chưa có (DB rất cũ) → false, để runMigration004 lo tạo trước.
+  const row = db
+    .prepare(`SELECT sql AS s FROM sqlite_master WHERE type = 'table' AND name = 'reservations'`)
+    .get() as { s: string } | undefined;
+  const ddl = row?.s ?? '';
+  if (!ddl) return false;
+  return !ddl.includes('BETWEEN 900 AND 14400');
+}
+
 function needsMigration007(db: AppDb): boolean {
   // DB mới (bootstrap schema.sql đã gộp v007) có sẵn cột → skip.
   // DB cũ thiếu cột → migrate (strip block đã có nếu migrate dở).
@@ -115,6 +130,31 @@ function needsMigration004(db: AppDb): boolean {
   return !tbl;
 }
 
+/**
+ * Migration 008 — reservations 24/24 + qua đêm (specs/migration-008-reservations-24h.sql).
+ * Chỉ chạy cho DB đã tồn tại (DB mới dùng schema.sql đã gộp v008).
+ * Idempotent 2 lớp: runner detect CHECK mới ('BETWEEN 900 AND 14400') thì skip
+ * (lớp chính); file SQL tự thân DROP IF EXISTS staging + rebuild cùng CHECK mới
+ * + copy giữ id nên chạy N lần không lỗi (lớp phụ).
+ * Backup file-level `.bak-008` trước khi chạy. Sau exec: foreign_key_check.
+ */
+function runMigration008(db: AppDb, dbFilePath: string): void {
+  if (!needsMigration008(db)) return;
+
+  const dirSpecs = specsDir();
+  const migPath = path.join(dirSpecs, MIGRATION_008_FILE);
+  if (!fs.existsSync(migPath)) {
+    throw new Error(`${MIGRATION_008_FILE} not found — cannot migrate existing database`);
+  }
+
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  fs.copyFileSync(dbFilePath, `${dbFilePath}${MIGRATION_008_BACKUP_SUFFIX}`);
+
+  const sql = fs.readFileSync(migPath, 'utf8');
+  db.exec(sql);
+  const bad = db.pragma('foreign_key_check');
+  if (Array.isArray(bad) && bad.length > 0) throw new Error('FK violation sau migration 008');
+}
 /**
  * Migration 007 — phân quyền chi tiết S4 (specs/migration-007-permissions.sql).
  * Chỉ chạy cho DB đã tồn tại (DB mới dùng schema.sql đã gộp v007).
@@ -339,6 +379,7 @@ export function openDatabase(dbFilePath: string): AppDb {
     runMigration005(db, dbFilePath);
     runMigration006(db, dbFilePath);
     runMigration007(db, dbFilePath);
+    runMigration008(db, dbFilePath);
     seedBcryptPlaceholders(db);
   }
   // RV-001 note 5: startup sweep — vé quá hạn active → expired để `passes:list
@@ -359,11 +400,13 @@ function sweepExpiredPasses(db: AppDb): void {
 }
 
 /**
- * P4 sweep (BE-011): `pending` quá `expires_at` (~20p sau start_time) → `expired`,
- * đồng thời trả spot đã giữ (`reserved` của chính row đó) về `available` trong
- * CÙNG 1 transaction. Idempotent; gọi khi mở app + trước mỗi check-in.
- * Guard `status = 'reserved'` lúc trả spot để không đụng ô đã được consume
- * (reserved → occupied lúc check-in bằng mã) hay tái sử dụng.
+ * P4 sweep (BE-011, BE-019 24/24): `pending` quá `expires_at` (= giờ kết thúc + 20p,
+ * datetime đầy đủ, qua đêm tràn ngày) → `expired`, đồng thời trả spot đã giữ
+ * (`reserved` của chính row đó) về `available` trong CÙNG 1 transaction.
+ * Idempotent; gọi khi mở app + trước mỗi check-in. Guard `status = 'reserved'`
+ * lúc trả spot để không đụng ô đã được consume (reserved → occupied lúc
+ * check-in bằng mã) hay tái sử dụng. KHÔNG giới hạn khung giờ — sweep thuần
+ * theo `expires_at` nên đúng cả đặt qua đêm.
  */
 export function sweepExpiredReservations(db: AppDb): number {
   const tx = db.transaction(() => {

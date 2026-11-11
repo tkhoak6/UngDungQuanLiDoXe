@@ -1,16 +1,21 @@
-// Customer area P4 — Đặt chỗ trong ngày (spec ./specs/customer-area.md §P4).
-// V1: chỉ giữ trong hôm nay, khung 06:00–22:00, duration 1–4h, quota ≤ 2
-// pending/customer (client chặn mềm + server COUNT), tự hủy +20p sau giờ hẹn.
-// Không thanh toán — giữ chỗ miễn phí, thu phí lúc gửi xe.
+// Customer area P4 — Đặt chỗ 24/24 + qua đêm (nối BE-019, sửa FE-023).
+// Giữ chỗ mọi giờ, end <= start = sang hôm sau, duration 15p–4h (UI chips
+// nhanh giữ 1/2/3/4h), quota ≤ 2 pending/customer, hết hạn = giờ kết thúc +20p
+// (server `expires_at`, countdown theo đó). Không thanh toán — giữ chỗ miễn
+// phí, thu phí lúc gửi xe.
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Alert, Badge, Button, Dialog, EmptyState, Field, RetryPanel, SkeletonRows, Toasts, type ToastItem } from '../components/ui';
 import { callApi } from '../lib/api';
 import { mockApi } from '../lib/mockApi';
 import { formatDateShort, normalizePlate, todayLocal } from '../lib/format';
-import type { CustomerReservationRow, Reservation, ZoneAvailability } from '../types';
+import type { CustomerReservationRow, CustomerVehicle, Reservation, ZoneAvailability } from '../types';
 
 let toastSeq = 500;
+
+// Đặt chỗ 24/24 (BE-019): mọi giờ đều đặt được, end <= start = qua đêm.
+// Quick mode đặt start = now + duration chip; detail mode nhập tay.
+const QUICK_DURATIONS = [60, 120, 180, 240]; // 1h / 2h / 3h / 4h
 
 type ListStatus = 'loading' | 'error' | 'ready';
 
@@ -19,10 +24,35 @@ function toMinutes(hhMm: string): number {
   return h * 60 + m;
 }
 
-function nowHHMM(): string {
-  const d = new Date();
+function nowHHMM(fromMs?: number): string {
+  const d = fromMs === undefined ? new Date() : new Date(fromMs);
   const p = (n: number): string => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Cộng phút vào HH:mm, tràn qua 0h (VD 23:00 + 120p → 01:00). */
+function addMinutesHHMM(hhMm: string, min: number): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  const t = (toMinutes(hhMm) + min) % (24 * 60);
+  return `${p(Math.floor(t / 60))}:${p(t % 60)}`;
+}
+
+/** end <= start = khung qua đêm (sang hôm sau). */
+function isOvernight(start: string, end: string): boolean {
+  return end <= start;
+}
+
+/** Duration phút, qua đêm +24h (VD 23:00→01:00 = 120p). */
+function durationMin(start: string, end: string): number {
+  const d = toMinutes(end) - toMinutes(start);
+  return d > 0 ? d : d + 24 * 60;
+}
+
+function fmtDur(min: number): string {
+  if (min < 60) return `${min} phút`;
+  const h = Math.floor(min / 60);
+  const r = min % 60;
+  return r === 0 ? `${h} giờ` : `${h} giờ ${r} phút`;
 }
 
 /** Phút còn lại tới expires_at (âm = đã hết). */
@@ -36,6 +66,12 @@ export function MyReservationsPage(): JSX.Element {
   const [zones, setZones] = useState<ZoneAvailability[]>([]);
   const [zoneId, setZoneId] = useState<number | ''>('');
   const [plate, setPlate] = useState('');
+  // FE-023 đặt nhanh 1 chạm: mặc định mode nhanh (start = now, chips 1–4h),
+  // link "Chỉnh giờ chi tiết" mở form Từ/Đến cũ cho ai cần.
+  const [quick, setQuick] = useState(true);
+  const [duration, setDuration] = useState(120); // default 2h
+  const [myVehicles, setMyVehicles] = useState<CustomerVehicle[]>([]);
+  const [plateCustom, setPlateCustom] = useState(false); // dropdown nhiều xe + "nhập khác"
   const [timeFrom, setTimeFrom] = useState('08:00');
   const [timeTo, setTimeTo] = useState('10:00');
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -91,10 +127,22 @@ export function MyReservationsPage(): JSX.Element {
     setListStatus('ready');
   }, []);
 
+  const loadVehicles = useCallback(async () => {
+    const res = await callApi((a) => a.customerVehicles(), () => mockApi.customerVehicles());
+    if (!res.ok) return; // không chặn form — vẫn cho nhập tay
+    const list = res.data?.vehicles ?? [];
+    setMyVehicles(list);
+    setPlate((prev) => {
+      if (prev.trim() !== '' || list.length === 0) return prev;
+      return list[0].license_plate; // prefill xe đầu tiên của tôi
+    });
+  }, []);
+
   useEffect(() => {
     void loadZones();
     void loadMine();
-  }, [loadZones, loadMine]);
+    void loadVehicles();
+  }, [loadZones, loadMine, loadVehicles]);
 
   // Job expiry không realtime-push — poll 60s khi tab mở (spec §P4.5).
   useEffect(() => {
@@ -111,6 +159,47 @@ export function MyReservationsPage(): JSX.Element {
   const quotaReached = pendingCount >= 2; // chặn mềm phía client (server COUNT là chốt)
   const activeZone = zones.find((z) => z.zone_id === zoneId) ?? null;
 
+  // ---- FE-024 đặt nhanh 24/24: start = now, end = now + duration (tràn qua đêm).
+  // Không clamp 22:00, không disable theo giờ — đặt mọi giờ.
+  const quickStart = nowHHMM(nowMs);
+  const quickEnd = addMinutesHHMM(quickStart, duration);
+  const quickOvernight = isOvernight(quickStart, quickEnd);
+
+  async function handleQuickReserve(): Promise<void> {
+    setFields({});
+    setBanner('');
+    setSuccess(null);
+    const errs: Record<string, string> = {};
+    const normalized = normalizePlate(plate);
+    if (normalized.length < 4) errs.license_plate = 'Biển số chưa đúng — VD: 51H-12345.';
+    if (zoneId === '') errs.zone_id = 'Vui lòng chọn khu vực.';
+    if (quotaReached) errs.quota = 'Bạn đã có 2 chỗ đang giữ.';
+    if (Object.keys(errs).length > 0) {
+      setFields(errs);
+      if (errs.quota) setBanner('Bạn đã có 2 chỗ đang giữ — hủy bớt trước khi giữ thêm.');
+      return;
+    }
+    const snap = nowHHMM(); // chốt giờ gửi — start = ngay bây giờ (24/24, qua đêm tự tràn)
+    const from = snap;
+    const to = addMinutesHHMM(snap, duration);
+    setBusy(true);
+    const res = await callApi(
+      (a) => a.reserve({ zone_id: Number(zoneId), license_plate: normalized, date: todayLocal(), start_time: from, end_time: to }),
+      () => mockApi.reserve({ zone_id: Number(zoneId), license_plate: normalized, date: todayLocal(), start_time: from, end_time: to }),
+    );
+    setBusy(false);
+    if (!res.ok) {
+      if (res.fields) setFields(res.fields);
+      if (/hết chỗ|2 chỗ đang giữ/i.test(res.error ?? '')) setBanner(res.error ?? '');
+      else if (!res.fields) setBanner(res.error ?? 'Giữ chỗ thất bại');
+      return;
+    }
+    setSuccess(res.data ?? null);
+    pushToast('success', `Đã giữ chỗ — mã ${res.data?.code}`);
+    void loadMine(true);
+    void loadZones();
+  }
+
   async function handleReserve(): Promise<void> {
     setFields({});
     setBanner('');
@@ -121,15 +210,14 @@ export function MyReservationsPage(): JSX.Element {
     if (zoneId === '') errs.zone_id = 'Vui lòng chọn khu vực.';
     if (!timeFrom || !timeTo) {
       errs.time = 'Vui lòng chọn giờ bắt đầu và kết thúc.';
+    } else if (timeFrom === timeTo) {
+      errs.time = 'Giờ kết thúc phải sau giờ bắt đầu.';
     } else {
-      if (!(timeFrom >= '06:00' && timeTo <= '22:00' && timeFrom < timeTo)) {
-        errs.time = 'Khung giờ phải trong 06:00–22:00, giờ kết thúc sau giờ bắt đầu.';
-      } else {
-        const dur = toMinutes(timeTo) - toMinutes(timeFrom);
-        if (dur < 60 || dur > 240) errs.time = 'Thời gian giữ từ 1 đến 4 giờ.';
-        else if (timeFrom < nowHHMM() && toMinutes(nowHHMM()) - toMinutes(timeFrom) > 15) {
-          errs.time = 'Giờ bắt đầu đã qua — chọn giờ còn hiệu lực trong hôm nay.';
-        }
+      // 24/24: mọi giờ đều được, end <= start = qua đêm (ngày bắt đầu = hôm nay).
+      const dur = durationMin(timeFrom, timeTo);
+      if (dur < 15 || dur > 240) errs.time = 'Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ.';
+      else if (timeFrom < nowHHMM() && toMinutes(nowHHMM()) - toMinutes(timeFrom) > 15) {
+        errs.time = 'Giờ bắt đầu đã qua — chọn giờ còn hiệu lực.';
       }
     }
     if (quotaReached) errs.quota = 'Bạn đã có 2 chỗ đang giữ.';
@@ -190,6 +278,8 @@ export function MyReservationsPage(): JSX.Element {
   function refill(row: CustomerReservationRow): void {
     setZoneId(row.zone_id);
     setPlate(row.license_plate);
+    setPlateCustom(false);
+    setQuick(false); // đặt lại theo khung giờ cụ thể của vé cũ
     setTimeFrom(row.start_time);
     setTimeTo(row.end_time);
     setSuccess(null);
@@ -204,7 +294,7 @@ export function MyReservationsPage(): JSX.Element {
       <div className="page-head">
         <div>
           <h1>Đặt chỗ</h1>
-          <p>Giữ chỗ trong ngày {formatDateShort(today)} — miễn phí, thu phí lúc gửi xe.</p>
+          <p>Giữ chỗ 24/24 ngày {formatDateShort(today)} — miễn phí, thu phí lúc gửi xe.</p>
         </div>
       </div>
 
@@ -242,62 +332,144 @@ export function MyReservationsPage(): JSX.Element {
         <div className="field">
           <label htmlFor="rsv-date">Ngày</label>
           <input id="rsv-date" className="input" value={formatDateShort(today)} readOnly aria-readonly="true" />
-          <span className="field-hint">V1 chỉ giữ chỗ trong ngày.</span>
+          <span className="field-hint">Ngày bắt đầu giữ chỗ — khung qua đêm (VD 23:00→01:00) tính sang hôm sau.</span>
         </div>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <div className="field" style={{ flex: 1, minWidth: 140 }}>
-            <label htmlFor="rsv-from">Từ giờ *</label>
-            <input
-              id="rsv-from"
-              type="time"
-              className="input"
-              value={timeFrom}
-              min="06:00"
-              max="22:00"
+        {quick ? (
+          <>
+            <div className="field">
+              <span id="rsv-dur-label" style={{ fontWeight: 600, fontSize: 14 }}>Thời lượng *</span>
+              <div role="group" aria-labelledby="rsv-dur-label" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+                {QUICK_DURATIONS.map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    className={duration === d ? 'btn btn-primary' : 'btn btn-neutral'}
+                    aria-pressed={duration === d}
+                    onClick={() => setDuration(d)}
+                  >
+                    {d / 60}h
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <span className="field-hint" aria-live="polite">
+                Bắt đầu: ngay bây giờ ({quickStart}) → kết thúc dự kiến {quickEnd} ({fmtDur(duration)}){quickOvernight && ' (qua đêm)'}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <div className="field" style={{ flex: 1, minWidth: 140 }}>
+                <label htmlFor="rsv-from">Từ giờ *</label>
+                <input
+                  id="rsv-from"
+                  type="time"
+                  className="input"
+                  value={timeFrom}
+                  onChange={(e) => {
+                    setTimeFrom(e.target.value);
+                    setFields((f) => ({ ...f, time: '' }));
+                  }}
+                  aria-invalid={Boolean(fields.time)}
+                  aria-describedby={fields.time ? 'rsv-time-err' : 'rsv-overnight-hint'}
+                />
+              </div>
+              <div className="field" style={{ flex: 1, minWidth: 140 }}>
+                <label htmlFor="rsv-to">Đến giờ *</label>
+                <input
+                  id="rsv-to"
+                  type="time"
+                  className="input"
+                  value={timeTo}
+                  onChange={(e) => {
+                    setTimeTo(e.target.value);
+                    setFields((f) => ({ ...f, time: '' }));
+                  }}
+                  aria-invalid={Boolean(fields.time)}
+                  aria-describedby={fields.time ? 'rsv-time-err' : 'rsv-overnight-hint'}
+                />
+              </div>
+            </div>
+            {fields.time && <div style={{ margin: '-4px 0 12px' }}><span className="field-error" id="rsv-time-err">{fields.time}</span></div>}
+            {!fields.time && timeFrom && timeTo && timeFrom !== timeTo && (
+              <div style={{ margin: '-4px 0 12px' }}>
+                <span className="field-hint" id="rsv-overnight-hint">
+                  {isOvernight(timeFrom, timeTo)
+                    ? `Qua đêm: ${timeFrom} hôm nay → ${timeTo} hôm sau (${fmtDur(durationMin(timeFrom, timeTo))}).`
+                    : `Trong ngày: ${timeFrom}–${timeTo} (${fmtDur(durationMin(timeFrom, timeTo))}).`}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        {myVehicles.length > 1 && !plateCustom ? (
+          <div className="field">
+            <label htmlFor="rsv-plate">Biển số xe *</label>
+            <select
+              id="rsv-plate"
+              className="select mono"
+              value={myVehicles.some((v) => v.license_plate === plate) ? plate : '__custom'}
               onChange={(e) => {
-                setTimeFrom(e.target.value);
-                setFields((f) => ({ ...f, time: '' }));
+                if (e.target.value === '__custom') {
+                  setPlateCustom(true);
+                  setPlate('');
+                } else {
+                  setPlate(e.target.value);
+                }
+                setFields((f) => ({ ...f, license_plate: '' }));
               }}
-              aria-invalid={Boolean(fields.time)}
-            />
+              aria-invalid={Boolean(fields.license_plate)}
+              aria-describedby={fields.license_plate ? 'rsv-plate-err' : undefined}
+            >
+              {myVehicles.map((v) => (
+                <option key={v.id} value={v.license_plate}>{v.license_plate}</option>
+              ))}
+              <option value="__custom">Biển số khác…</option>
+            </select>
+            {fields.license_plate && <span id="rsv-plate-err" className="field-error">{fields.license_plate}</span>}
+            <span className="field-hint">Biển số đối soát khi check-in bằng mã giữ chỗ</span>
           </div>
-          <div className="field" style={{ flex: 1, minWidth: 140 }}>
-            <label htmlFor="rsv-to">Đến giờ *</label>
-            <input
-              id="rsv-to"
-              type="time"
-              className="input"
-              value={timeTo}
-              min="06:00"
-              max="22:00"
-              onChange={(e) => {
-                setTimeTo(e.target.value);
-                setFields((f) => ({ ...f, time: '' }));
-              }}
-              aria-invalid={Boolean(fields.time)}
-            />
-          </div>
-        </div>
-        {fields.time && <div style={{ margin: '-4px 0 12px' }}><span className="field-error">{fields.time}</span></div>}
-        <Field
-          label="Biển số xe *"
-          mono
-          value={plate}
-          onChange={(e) => {
-            setPlate(e.target.value.toUpperCase());
-            setFields((f) => ({ ...f, license_plate: '' }));
-          }}
-          placeholder="VD 51H-12345"
-          autoComplete="off"
-          hint="Biển số đối soát khi check-in bằng mã giữ chỗ"
-          error={fields.license_plate}
-        />
+        ) : (
+          <Field
+            label="Biển số xe *"
+            mono
+            value={plate}
+            onChange={(e) => {
+              setPlate(e.target.value.toUpperCase());
+              setFields((f) => ({ ...f, license_plate: '' }));
+            }}
+            placeholder="VD 51H-12345"
+            autoComplete="off"
+            hint="Biển số đối soát khi check-in bằng mã giữ chỗ"
+            error={fields.license_plate}
+          />
+        )}
         {quotaReached ? (
           <Alert tone="warning">Bạn đã có 2 chỗ đang giữ — hủy bớt trước khi giữ thêm.</Alert>
+        ) : quick ? (
+          <>
+            <Button block onClick={() => void handleQuickReserve()} disabled={busy} aria-busy={busy}>
+              {busy ? 'Đang giữ chỗ…' : 'Giữ chỗ ngay'}
+            </Button>
+            <div style={{ marginTop: 8, textAlign: 'center' }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setQuick(false)}>
+                Chỉnh giờ chi tiết
+              </button>
+            </div>
+          </>
         ) : (
-          <Button block onClick={() => void handleReserve()} disabled={busy} aria-busy={busy}>
-            {busy ? 'Đang giữ chỗ…' : 'Giữ chỗ'}
-          </Button>
+          <>
+            <Button block onClick={() => void handleReserve()} disabled={busy} aria-busy={busy}>
+              {busy ? 'Đang giữ chỗ…' : 'Giữ chỗ'}
+            </Button>
+            <div style={{ marginTop: 8, textAlign: 'center' }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setQuick(true)}>
+                Về đặt nhanh
+              </button>
+            </div>
+          </>
         )}
       </div>
 
@@ -320,7 +492,7 @@ export function MyReservationsPage(): JSX.Element {
             </Button>
           </div>
           <p style={{ fontSize: 14, color: 'var(--color-text-60)', margin: 0 }}>
-            Hiệu lực {success.start_time}–{success.end_time} hôm nay · Tự hủy sau 20 phút quá giờ hẹn nếu chưa check-in.
+            Hiệu lực {success.start_time}–{success.end_time}{isOvernight(success.start_time, success.end_time) ? ' (qua đêm)' : ''} ngày {formatDateShort(success.date)} · Tự hủy lúc {success.expires_at.slice(11, 16)} (20 phút sau giờ kết thúc) nếu chưa check-in.
           </p>
         </div>
       )}
@@ -334,7 +506,7 @@ export function MyReservationsPage(): JSX.Element {
       )}
       {listStatus === 'ready' && rows.length === 0 && (
         <div className="card">
-          <EmptyState title="Chưa có vé giữ chỗ" hint="Chọn khu + khung giờ trong hôm nay rồi bấm Giữ chỗ — mã R-… dùng để check-in tại quầy." />
+          <EmptyState title="Chưa có vé giữ chỗ" hint="Chọn khu + thời lượng rồi bấm Giữ chỗ — mã R-… dùng để check-in tại quầy." />
         </div>
       )}
       {listStatus === 'ready' && rows.length > 0 && (
@@ -361,7 +533,7 @@ export function MyReservationsPage(): JSX.Element {
                   )}
                 </div>
                 <div style={{ fontSize: 14, color: 'var(--color-text-60)' }}>
-                  Khu {r.zone_code ?? '—'} · {formatDateShort(r.date)} {r.start_time}–{r.end_time} · Biển số <span className="mono">{r.license_plate}</span>
+                  Khu {r.zone_code ?? '—'} · {formatDateShort(r.date)} {r.start_time}–{r.end_time}{isOvernight(r.start_time, r.end_time) ? ' (qua đêm)' : ''} · Biển số <span className="mono">{r.license_plate}</span>
                 </div>
                 {r.status === 'pending' && !Number.isNaN(mins) && (
                   <div style={{ fontSize: 12, color: 'var(--color-text-60)', marginTop: 4 }}>

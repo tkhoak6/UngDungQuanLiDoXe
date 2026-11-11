@@ -51,7 +51,9 @@ class Validators {
     return null;
   }
 
-  /// Slot đặt chỗ V1: ngày = today, 1–4h, trong 06:00–22:00.
+  /// Slot đặt chỗ 24/24 + qua đêm (BE-019): không khung giờ, end <= start
+  /// = sang hôm sau (+24h), mỗi lượt 15 phút–4 giờ, hết hạn = giờ kết
+  /// thúc + 20p. `date` = ngày bắt đầu (= today, backend ép).
   static String? slot({
     required DateTime date,
     required DateTime now,
@@ -59,14 +61,17 @@ class Validators {
     required int toMin,
   }) {
     if (!_sameDay(date, now)) return 'V1 chỉ giữ chỗ trong ngày.';
-    if (fromMin < 6 * 60) return 'Giờ bắt đầu từ 06:00.';
-    if (toMin > 22 * 60) return 'Giờ kết thúc đến 22:00.';
-    if (toMin <= fromMin) return 'Giờ kết thúc phải sau giờ bắt đầu.';
-    final dur = toMin - fromMin;
-    if (dur < 60) return 'Giữ tối thiểu 1 giờ.';
-    if (dur > 4 * 60) return 'Giữ tối đa 4 giờ.';
+    if (toMin == fromMin) return 'Giờ kết thúc phải sau giờ bắt đầu.';
+    final dur = toMin > fromMin
+        ? toMin - fromMin
+        : toMin - fromMin + 24 * 60;
+    if (dur < 15 || dur > 4 * 60) {
+      return 'Mỗi lượt giữ chỗ từ 15 phút đến 4 giờ.';
+    }
     final nowMin = now.hour * 60 + now.minute;
-    if (fromMin <= nowMin) return 'Giờ bắt đầu phải trong tương lai.';
+    if (fromMin < nowMin - 15) {
+      return 'Giờ bắt đầu đã qua — vui lòng chọn khung giờ khác.';
+    }
     return null;
   }
 
