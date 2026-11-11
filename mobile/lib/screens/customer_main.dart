@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/format.dart';
 import '../core/reservations.dart';
+import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
@@ -41,8 +42,12 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   late TimeOfDay _to;
   bool _saving = false;
   String? _formErr;
-  int _reload = 0;
   int _pendingCount = 0;
+  // MO-013: giữ Future qua rebuild — ô biển số nằm trong FutureBuilder, tạo
+  // future mới mỗi build + setState khi gõ = mất focus sau 1 ký tự.
+  final _reservationsRet = RetainedFuture<List<ReservationRow>>();
+  final _zonesRet = RetainedFuture<List<ZoneAvailability>>();
+  final _vehiclesRet = RetainedFuture<List<VehicleRow>>();
   List<ZoneAvailability> _zones = [];
   DateTime _now = DateTime.now();
   Timer? _tick;
@@ -56,14 +61,14 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
     final endMin = n.hour * 60 + n.minute + 120;
     _to = TimeOfDay(hour: (endMin ~/ 60) % 24, minute: endMin % 60);
     // Countdown tick 30s + poll 60s (BE-019: poll giữ nguyên).
+    // MO-013: poll đi qua _refreshLists (giữ value cũ lúc chờ) nên ô biển số
+    // đang gõ không bị unmount/mất focus.
     var polls = 0;
     _tick = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!mounted) return;
       polls++;
-      setState(() {
-        _now = DateTime.now();
-        if (polls % 2 == 0) _reload++; // poll 60s
-      });
+      setState(() => _now = DateTime.now());
+      if (polls % 2 == 0) _refreshLists();
     });
   }
 
@@ -124,13 +129,29 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
             toMin: toMin,
           );
       if (!mounted) return;
-      setState(() => _reload++);
+      _refreshLists();
       _showSuccess(row);
     } on RepoException catch (e) {
       setState(() => _formErr = e.message);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  /// Tải lại 3 list (poll 60s, retry, sau giữ/hủy). Giữ value cũ lúc chờ nên
+  /// form + ô biển số không bị thay bằng LoadingList (MO-013).
+  void _refreshLists() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider);
+    if (me == null) return;
+    final repo = ref.read(customerRepoProvider);
+    final zonesRepo = ref.read(parkingRepoProvider);
+    final phone = me.phone ?? me.username;
+    setState(() {
+      _reservationsRet.refresh(() => repo.myReservations(me.id));
+      _zonesRet.refresh(() => zonesRepo.availability());
+      _vehiclesRet.refresh(() => repo.myVehicles(phone));
+    });
   }
 
   void _showSuccess(ReservationRow row) {
@@ -211,7 +232,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
           .read(customerRepoProvider)
           .cancelReservation(row.code, me.id);
       if (!mounted) return;
-      setState(() => _reload++);
+      _refreshLists();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Đã hủy vé giữ chỗ ${row.code}')),
       );
@@ -243,8 +264,6 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // ignore: unused_local_variable
-    final reload = _reload;
     final repo = ref.watch(customerRepoProvider);
     final zonesRepo = ref.watch(parkingRepoProvider);
     final me = ref.watch(sessionProvider);
@@ -257,24 +276,28 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
       appBar:
           AppBar(title: const Text('Đặt chỗ', style: AppText.appBar)),
       body: FutureBuilder<List<ReservationRow>>(
-        future: repo.myReservations(me.id),
+        // MO-013: future giữ qua rebuild — gõ biển số (setState mỗi ký tự)
+        // không tạo future mới, không rớt về waiting, không mất focus.
+        future:
+            _reservationsRet.of(me.id, () => repo.myReservations(me.id)),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
+          // Fetch lại (poll/retry) thì vẽ tiếp dữ liệu cũ trong lúc chờ.
+          final rows = snap.data ?? _reservationsRet.value;
+          if (rows == null) {
+            if (snap.hasError) {
+              return Padding(
+                padding: const EdgeInsets.all(AppGaps.s16),
+                child: ErrorBanner(
+                  message: 'Không tải được danh sách giữ chỗ.',
+                  onRetry: _refreshLists,
+                ),
+              );
+            }
             return const Padding(
               padding: EdgeInsets.all(AppGaps.s16),
               child: LoadingList(),
             );
           }
-          if (snap.hasError) {
-            return Padding(
-              padding: const EdgeInsets.all(AppGaps.s16),
-              child: ErrorBanner(
-                message: 'Không tải được danh sách giữ chỗ.',
-                onRetry: () => setState(() => _reload++),
-              ),
-            );
-          }
-          final rows = snap.data ?? <ReservationRow>[];
           _pendingCount =
               rows.where((r) => r.status == 'pending').length;
           final quotaReached = _pendingCount >= 2;
@@ -296,9 +319,12 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
                       ),
                       const SizedBox(height: AppGaps.s12),
                       FutureBuilder<List<ZoneAvailability>>(
-                        future: zonesRepo.availability(),
+                        future: _zonesRet.of(
+                            phone, () => zonesRepo.availability()),
                         builder: (context, zSnap) {
-                          final zones = zSnap.data ?? [];
+                          final zones = zSnap.data ??
+                              _zonesRet.value ??
+                              <ZoneAvailability>[];
                           _zones = zones;
                           if (_zoneId == null && zones.isNotEmpty) {
                             final withFree = zones.where(
@@ -330,10 +356,12 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
                       ),
                       const SizedBox(height: AppGaps.s12),
                       FutureBuilder<List<VehicleRow>>(
-                        future: repo.myVehicles(phone),
+                        future: _vehiclesRet.of(
+                            phone, () => repo.myVehicles(phone)),
                         builder: (context, vSnap) {
-                          final vehicles =
-                              vSnap.data ?? <VehicleRow>[];
+                          final vehicles = vSnap.data ??
+                              _vehiclesRet.value ??
+                              <VehicleRow>[];
                           if (_prefilledFor != phone &&
                               vehicles.isNotEmpty &&
                               _plate.text.isEmpty) {

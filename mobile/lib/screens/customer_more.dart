@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/format.dart';
+import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../repos/parking_repo.dart';
@@ -23,7 +24,28 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
   int _months = 1;
   bool _saving = false;
   String? _err;
-  int _reload = 0;
+  // MO-013: giữ Future qua rebuild — ô biển số nằm trong FutureBuilder, tạo
+  // future mới mỗi build + setState (đổi khu/gói) = ô nhập bị remount.
+  final _passesRet = RetainedFuture<List<PassRow>>();
+  final _parkedRet = RetainedFuture<List<SessionRow>>();
+  // MO-013: dropdown khu là sibling của ô biển số — giữ future để setState
+  // (gõ biển số, đổi gói) không làm dropdown nháy về rỗng.
+  final _zonesRet = RetainedFuture<List<ParkingZone>>();
+
+  /// Tải lại vé (retry, sau khi gửi đăng ký). Giữ value cũ lúc chờ.
+  void _refreshPasses() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider);
+    if (me == null) return;
+    final repo = ref.read(customerRepoProvider);
+    final zonesRepo = ref.read(parkingRepoProvider);
+    final key = me.phone ?? me.username;
+    setState(() {
+      _passesRet.refresh(() => repo.myPasses(key));
+      _parkedRet.refresh(() => repo.myParkedSessions(key));
+      _zonesRet.refresh(() => zonesRepo.zones());
+    });
+  }
 
   @override
   void dispose() {
@@ -48,7 +70,7 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
           );
       _plate.clear();
       if (mounted) {
-        setState(() => _reload++);
+        _refreshPasses();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -65,8 +87,6 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // ignore: unused_local_variable
-    final reload = _reload;
     final me = ref.watch(sessionProvider);
     if (me == null) {
       return const Center(child: Text('Đăng nhập để xem vé.'));
@@ -77,24 +97,29 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Vé', style: AppText.appBar)),
       body: FutureBuilder<List<PassRow>>(
-        future: repo.myPasses(me.phone ?? me.username),
+        // MO-013: future giữ qua rebuild — setState (đổi khu/gói/retry)
+        // không tạo future mới, ô biển số không bị remount/mất focus.
+        future: _passesRet.of(
+            me.phone ?? me.username,
+            () => repo.myPasses(me.phone ?? me.username)),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
+          // Fetch lại thì vẽ tiếp dữ liệu cũ trong lúc chờ.
+          final passes = snap.data ?? _passesRet.value;
+          if (passes == null) {
+            if (snap.hasError) {
+              return Padding(
+                padding: const EdgeInsets.all(AppGaps.s16),
+                child: ErrorBanner(
+                  message: 'Không tải được vé.',
+                  onRetry: _refreshPasses,
+                ),
+              );
+            }
             return const Padding(
               padding: EdgeInsets.all(AppGaps.s16),
               child: LoadingList(),
             );
           }
-          if (snap.hasError) {
-            return Padding(
-              padding: const EdgeInsets.all(AppGaps.s16),
-              child: ErrorBanner(
-                message: 'Không tải được vé.',
-                onRetry: () => setState(() => _reload++),
-              ),
-            );
-          }
-          final passes = snap.data ?? <PassRow>[];
           final warn = passes.any((p) =>
               p.status == 'pending' || _expiringSoon(p.endDate));
           return ListView(
@@ -103,19 +128,23 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
               const Text('Vé đang dùng', style: AppText.cardTitle),
               const SizedBox(height: AppGaps.s12),
               FutureBuilder<List<SessionRow>>(
-                future: repo.myParkedSessions(me.phone ?? me.username),
+                future: _parkedRet.of(me.phone ?? me.username,
+                    () => repo.myParkedSessions(me.phone ?? me.username)),
                 builder: (context, parkSnap) {
+                  final parked =
+                      parkSnap.data ?? _parkedRet.value ?? <SessionRow>[];
                   if (parkSnap.connectionState ==
-                      ConnectionState.waiting) {
+                          ConnectionState.waiting &&
+                      parkSnap.data == null &&
+                      _parkedRet.value == null) {
                     return const LoadingList(rows: 1);
                   }
-                  if (parkSnap.hasError) {
+                  if (parkSnap.hasError && parked.isEmpty) {
                     return ErrorBanner(
                       message: 'Không tải được vé đang dùng.',
-                      onRetry: () => setState(() => _reload++),
+                      onRetry: _refreshPasses,
                     );
                   }
-                  final parked = parkSnap.data ?? <SessionRow>[];
                   if (parked.isEmpty) {
                     return const Text(
                       'Không có xe nào đang đỗ.',
@@ -180,9 +209,10 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
               ),
               const SizedBox(height: AppGaps.s12),
               FutureBuilder<List<ParkingZone>>(
-                future: zonesRepo.zones(),
+                future: _zonesRet.of('zones', () => zonesRepo.zones()),
                 builder: (context, zSnap) {
-                  final zones = zSnap.data ?? [];
+                  final zones =
+                      zSnap.data ?? _zonesRet.value ?? <ParkingZone>[];
                   return DropdownButtonFormField<int>(
                     key: ValueKey(_zoneId),
                     initialValue: _zoneId,

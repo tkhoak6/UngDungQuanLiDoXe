@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/qr_ticket.dart';
+import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
@@ -231,6 +232,17 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
   final _key = TextEditingController();
   String? _keyMsg;
   bool _keySaving = false;
+  // MO-013: ô dán khóa nằm trong FutureBuilder — giữ future để setState
+  // (lưu/xóa khóa, đồng bộ…) không remount ô nhập.
+  final _hasKeyRet = RetainedFuture<bool>();
+
+  /// Tải lại trạng thái khóa sau lưu/xóa. Giữ value cũ lúc chờ.
+  void _refreshKey() {
+    if (!mounted) return;
+    setState(() {
+      _hasKeyRet.refresh(() => ref.read(qrKeyStoreProvider).hasKey);
+    });
+  }
 
   @override
   void dispose() {
@@ -252,7 +264,10 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
     try {
       await ref.read(qrKeyStoreProvider).saveKey(keyB64: v);
       _key.clear();
-      if (mounted) setState(() => _keyMsg = 'Đã lưu khóa QR trên máy này.');
+      if (mounted) {
+        _refreshKey();
+        setState(() => _keyMsg = 'Đã lưu khóa QR trên máy này.');
+      }
     } finally {
       if (mounted) setState(() => _keySaving = false);
     }
@@ -339,9 +354,11 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
           const Text('Khóa QR (máy này)', style: AppText.cardTitle),
           const SizedBox(height: AppGaps.s8),
           FutureBuilder<bool>(
-            future: ref.watch(qrKeyStoreProvider).hasKey,
+            // MO-013: future giữ qua rebuild — setState không remount ô khóa.
+            future: _hasKeyRet.of(
+                'qr-key', () => ref.watch(qrKeyStoreProvider).hasKey),
             builder: (context, snap) {
-              final has = snap.data ?? false;
+              final has = snap.data ?? _hasKeyRet.value ?? false;
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(AppGaps.s12),
@@ -404,6 +421,7 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
                                       .read(qrKeyStoreProvider)
                                       .clear();
                                   if (mounted) {
+                                    _refreshKey();
                                     setState(() => _keyMsg =
                                         'Đã xóa khóa trên máy này.');
                                   }

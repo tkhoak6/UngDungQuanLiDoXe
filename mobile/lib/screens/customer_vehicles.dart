@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/format.dart';
+import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../repos/customer_repo.dart';
@@ -21,12 +22,31 @@ class _VehiclesScreenState extends ConsumerState<VehiclesScreen> {
   int _segment = 0;
   String _search = '';
   int _range = 7;
-  int _reload = 0;
+  // MO-013: giữ Future qua rebuild — ô tìm kiếm setState mỗi ký tự, tạo
+  // future mới mỗi build = SearchBar bị unmount, mất focus sau 1 ký tự.
+  final _vehiclesRet = RetainedFuture<List<VehicleRow>>();
+  final _historyRet = RetainedFuture<List<SessionRow>>();
+
+  /// Tải lại cả 2 tab (retry). Giữ value cũ lúc chờ nên không blink.
+  void _refresh() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider);
+    if (me == null || me.phone == null) return;
+    final repo = ref.read(customerRepoProvider);
+    final phone = me.phone!;
+    setState(() {
+      _vehiclesRet.refresh(() => repo.myVehicles(phone));
+      _historyRet.refresh(() => repo.mySessions(phone, from: _day(_from())));
+    });
+  }
+
+  DateTime _from() => DateTime.now().subtract(Duration(days: _range));
+
+  static String _day(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext context) {
-    // ignore: unused_local_variable
-    final reload = _reload;
     final me = ref.watch(sessionProvider);
     if (me == null || me.phone == null) {
       return const Center(child: Text('Đăng nhập để xem xe.'));
@@ -71,25 +91,30 @@ class _VehiclesScreenState extends ConsumerState<VehiclesScreen> {
 
   Widget _vehicles(CustomerRepo repo, AppUser me) {
     return FutureBuilder<List<VehicleRow>>(
-      future: repo.myVehicles(me.phone!),
+      // MO-013: future giữ qua rebuild — gõ ô tìm kiếm không tạo future mới,
+      // SearchBar không bị unmount, không mất focus.
+      future:
+          _vehiclesRet.of(me.phone!, () => repo.myVehicles(me.phone!)),
       builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
+        // Tải lại (retry) thì vẽ tiếp dữ liệu cũ trong lúc chờ.
+        final cached = snap.data ?? _vehiclesRet.value;
+        if (cached == null) {
+          if (snap.hasError) {
+            return Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: AppGaps.s16),
+              child: ErrorBanner(
+                message: 'Không tải được xe.',
+                onRetry: _refresh,
+              ),
+            );
+          }
           return const Padding(
             padding: EdgeInsets.symmetric(horizontal: AppGaps.s16),
             child: LoadingList(),
           );
         }
-        if (snap.hasError) {
-          return Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: AppGaps.s16),
-            child: ErrorBanner(
-              message: 'Không tải được xe.',
-              onRetry: () => setState(() => _reload++),
-            ),
-          );
-        }
-        var rows = snap.data ?? <VehicleRow>[];
+        var rows = cached;
         if (_search.trim().isNotEmpty) {
           final q = _search.trim().toUpperCase();
           rows = rows
@@ -149,30 +174,28 @@ class _VehiclesScreenState extends ConsumerState<VehiclesScreen> {
   }
 
   Widget _history(CustomerRepo repo, AppUser me) {
-    final now = DateTime.now();
-    final from = now.subtract(Duration(days: _range));
-    String day(DateTime d) =>
-        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    final key = '${me.phone}-$_range';
     return FutureBuilder<List<SessionRow>>(
-      future: repo.mySessions(me.phone!, from: day(from)),
+      future: _historyRet.of(
+          key, () => repo.mySessions(me.phone!, from: _day(_from()))),
       builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
+        final rows = snap.data ?? _historyRet.value;
+        if (rows == null) {
+          if (snap.hasError) {
+            return Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: AppGaps.s16),
+              child: ErrorBanner(
+                message: 'Không tải được lịch sử.',
+                onRetry: _refresh,
+              ),
+            );
+          }
           return const Padding(
             padding: EdgeInsets.symmetric(horizontal: AppGaps.s16),
             child: LoadingList(),
           );
         }
-        if (snap.hasError) {
-          return Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: AppGaps.s16),
-            child: ErrorBanner(
-              message: 'Không tải được lịch sử.',
-              onRetry: () => setState(() => _reload++),
-            ),
-          );
-        }
-        final rows = snap.data ?? <SessionRow>[];
         final total =
             rows.fold<int>(0, (a, r) => a + (r.totalFee ?? 0));
         return Column(

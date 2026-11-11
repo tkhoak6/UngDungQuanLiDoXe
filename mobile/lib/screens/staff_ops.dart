@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/format.dart';
+import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
@@ -23,6 +24,9 @@ class CheckinScreen extends ConsumerStatefulWidget {
 class _CheckinScreenState extends ConsumerState<CheckinScreen> {
   final _plate = TextEditingController();
   final _reservation = TextEditingController();
+  // MO-013: giữ Future khu qua rebuild — dropdown khu là sibling của ô biển
+  // số, refire future mỗi setState gây nháy + rủi ro remount form.
+  final _zonesRet = RetainedFuture<List<ParkingZone>>();
   int? _zoneId;
   String _vehicleType = 'car';
   bool _saving = false;
@@ -128,9 +132,12 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
                 ),
                 const SizedBox(height: AppGaps.s12),
                 FutureBuilder<List<ParkingZone>>(
-                  future: repo.zones(),
+                  // MO-013: future giữ qua rebuild — sibling của ô biển số,
+                  // refire mỗi setState gây nháy dropdown.
+                  future: _zonesRet.of('zones', () => repo.zones()),
                   builder: (context, snap) {
-                    final zones = snap.data ?? [];
+                    final zones =
+                        snap.data ?? _zonesRet.value ?? <ParkingZone>[];
                     return DropdownButtonFormField<int>(
                       key: ValueKey(_zoneId),
                       initialValue: _zoneId,

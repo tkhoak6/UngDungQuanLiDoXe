@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/tokens.dart';
+import '../core/retained_future.dart';
 import '../models/entities.dart';
 import '../repos/staff_repo.dart';
 import '../state/providers.dart';
@@ -23,7 +24,24 @@ class _AttendanceScreenState
   final _note = TextEditingController();
   bool _busy = false;
   String? _err;
-  int _reload = 0;
+  // MO-013: giữ Future qua rebuild — ô tiền/ghi chú nằm trong FutureBuilder,
+  // setState lúc submit không được unmount chúng.
+  final _todayRet = RetainedFuture<AttendanceRow?>();
+  final _yesterdayRet = RetainedFuture<String?>();
+  final _historyRet = RetainedFuture<List<AttendanceRow>>();
+
+  /// Tải lại ca hôm nay (retry, sau vào/chốt ca). Giữ value cũ lúc chờ.
+  void _refresh() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider);
+    if (me == null) return;
+    final repo = ref.read(staffRepoProvider);
+    setState(() {
+      _todayRet.refresh(() => repo.today(me.id));
+      _yesterdayRet.refresh(() => repo.yesterdayOpen(me.id));
+      _historyRet.refresh(() => repo.history(me.id));
+    });
+  }
 
   @override
   void dispose() {
@@ -35,8 +53,6 @@ class _AttendanceScreenState
 
   @override
   Widget build(BuildContext context) {
-    // ignore: unused_local_variable
-    final reload = _reload;
     final me = ref.watch(sessionProvider);
     if (me == null) {
       return const Center(child: Text('Chưa đăng nhập.'));
@@ -52,20 +68,23 @@ class _AttendanceScreenState
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [
           FutureBuilder<AttendanceRow?>(
-            future: repo.today(me.id),
+            // MO-013: future giữ qua rebuild — setState lúc submit không tạo
+            // future mới, ô tiền/ghi chú không bị unmount/mất focus.
+            future: _todayRet.of(me.id, () => repo.today(me.id)),
             builder: (context, snap) {
-              if (snap.connectionState ==
-                  ConnectionState.waiting) {
-                return const LoadingList(rows: 2);
+              // Fetch lại thì vẽ tiếp ca cũ trong lúc chờ.
+              final att = snap.data ?? _todayRet.value;
+              if (att == null) {
+                if (snap.hasError) {
+                  return ErrorBanner(
+                    message: 'Không tải được ca hiện tại.',
+                    onRetry: _refresh,
+                  );
+                }
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const LoadingList(rows: 2);
+                }
               }
-              if (snap.hasError) {
-                return ErrorBanner(
-                  message: 'Không tải được ca hiện tại.',
-                  onRetry: () =>
-                      setState(() => _reload++),
-                );
-              }
-              final att = snap.data;
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(AppGaps.s16),
@@ -123,8 +142,7 @@ class _AttendanceScreenState
                                     0,
                               );
                               if (mounted) {
-                                setState(
-                                    () => _reload++);
+                                _refresh();
                               }
                             } on Object catch (e) {
                               setState(() => _err =
@@ -184,8 +202,7 @@ class _AttendanceScreenState
                                 note: _note.text,
                               );
                               if (mounted) {
-                                setState(
-                                    () => _reload++);
+                                _refresh();
                                 messenger
                                     .showSnackBar(
                                   const SnackBar(
@@ -216,7 +233,8 @@ class _AttendanceScreenState
           ),
           const SizedBox(height: AppGaps.s16),
           FutureBuilder<String?>(
-            future: repo.yesterdayOpen(me.id),
+            future:
+                _yesterdayRet.of(me.id, () => repo.yesterdayOpen(me.id)),
             builder: (context, snap) {
               if (snap.data == null) {
                 return const SizedBox.shrink();
@@ -237,11 +255,14 @@ class _AttendanceScreenState
           const Text('7 ngày gần nhất',
               style: AppText.cardTitle),
           FutureBuilder<List<AttendanceRow>>(
-            future: repo.history(me.id),
+            future: _historyRet.of(me.id, () => repo.history(me.id)),
             builder: (context, snap) {
-              final rows = snap.data ?? [];
+              final rows =
+                  snap.data ?? _historyRet.value ?? <AttendanceRow>[];
               if (snap.connectionState ==
-                  ConnectionState.waiting) {
+                      ConnectionState.waiting &&
+                  snap.data == null &&
+                  _historyRet.value == null) {
                 return const LoadingList(rows: 3);
               }
               if (rows.isEmpty) {
