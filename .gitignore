@@ -10,7 +10,7 @@ release/
 *.db-wal
 *.db-shm
 *.bak-*
-data/
+/data/
 dev-out.log
 dev-err.log
 

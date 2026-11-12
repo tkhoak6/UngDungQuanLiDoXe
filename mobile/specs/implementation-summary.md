@@ -223,3 +223,49 @@
 - `build/web/main.dart.js` 3.131.690 bytes TỒN TẠI; `index.html` không chứa DEBUG.
 - grep `print(|debugPrint(` trong `lib/` → 0 match.
 - APK: bỏ qua (không có Android SDK) theo contract.
+
+---
+
+# MO-017 — Cải thiện tỉ lệ nhận diện ANPR (nối MO-014, case screenshot 00:13)
+
+## Chẩn đoán lại bằng chứng thật (đính chính giả thuyết Leader)
+
+- Giả thuyết "model tải qua Play Services, cần mạng lần đầu" là **SAI với
+  plugin đang dùng** (xác minh bằng source, không đoán):
+  `google_mlkit_text_recognition 1.0.2` (pub cache) → Android dùng
+  `com.google.mlkit:text-recognition:16.0.1` (**bundled**, model đi kèm
+  APK, không phải thin-client Play Services), iOS bundle
+  `LatinOCRResources`. Latin KHÔNG cần tải thêm, KHÔNG cần mạng lần đầu.
+- Kênh native chỉ có `vision#startTextRecognizer` / `vision#close…` → **API
+  KHÔNG có pre-check trạng thái model** → đi nhánh "bắt lỗi/timeout" theo
+  đúng contract ("nếu API hỗ trợ HOẶC bắt lỗi").
+- Nguyên nhân rỗng khả dĩ nhất ở case user: ảnh đêm thiếu sáng/nhòe +
+  timeout khởi tạo lạnh lần đầu (8s), hoặc OCR full-frame bỏ sót biển 2
+  dòng nhỏ. Code cũ gộp tất cả thành 1 message "Chưa đọc được" gây hiểu lầm.
+- File `./specs/qr-anpr.md` (§2) được các summary cũ trích dẫn **không tồn
+  tại** trong `mobile/specs/` — task này bám contract MO-017 + code hiện có.
+
+## Quyết định (chỉ `mobile/`, không đụng desktop, không chạy app)
+
+| File | Thay đổi |
+|---|---|
+| `lib/core/anpr.dart` | + `AnprFailureKind` (engine/timeout/empty/unmatched) + `classify({error, text})` (lỗi thắng trước text) + `hintFor(kind, {torchOn})` (copy Việt riêng từng nguyên nhân, empty gợi ý flash khi torch tắt) + `bestEffort` (dòng có chữ đầu → normalize, cắt 10) + `ocrSnippet` (gộp whitespace, cắt 48 + …) + `extractCandidates` ghép **cặp dòng kề** (biển 2 dòng "65-AB/829.65" → `65AB82965`; dòng rác ghép vào quá dài/sai pattern tự rớt) + `AnprCrop`/`CropBox` (tỉ lệ overlay canh giữa → pixel, kẹp biên, vô lý → null/full-frame fallback). Toàn pure, test được |
+| `lib/data/anpr_recognizer.dart` | + `AnprEngineException(code, message)` — `MlKitAnprRecognizer.recognize` wrap `PlatformException` (`TextRecognizerError` từ Kotlin) + `Exception` → typed, giữ message gốc; comment ghi rõ bằng chứng bundled + không có API pre-check |
+| `lib/screens/anpr_sheet.dart` | `_capture`: `TimeoutException` → hint timeout; `AnprEngineException`/lỗi khác → hint engine; text rỗng → hint empty (+torch); có chữ không khớp biển → sang confirm với `_rawOcr` (banner "Máy đọc được: …" + field prefill best-effort để sửa/dùng) thay vì rớt "Chưa đọc được". Nút chính thành **"Thử lại"** sau thất bại. "Chụp lại" ở confirm/pick reset `_rawOcr`. Giữ nguyên: xóa frame trong `finally`, không gửi mạng, "Nhập tay" luôn sẵn |
+| `test/anpr_mo017_test.dart` (mới, 23 tests) | classify 5 (timeout/engine/empty/unmatched/lỗi-thắng-text) + hintFor 4 + bestEffort/snippet 3 + cross-line 5 (gồm case screenshot + không ảo từ 2 biển kề dòng + hồi quy MO-014) + AnprCrop 4 + engine typed 2 (recognize trên VM → `AnprEngineException`) |
+| Crop byte ảnh thật | **HOÃN sang P2** (ghi rõ, không stub): cần thêm dep `image` + đo trên thiết bị thật; `AnprCrop` đã sẵn công thức + test để P2 dùng ngay. Không đáng đổi lockfile khi chưa đo được lợi ích |
+
+## Verification (12/11/2026)
+
+- `flutter analyze` → **No issues found!** (toàn dự án)
+- `flutter test` → **All tests passed! (115 tests: 92 cũ + 23 mới MO-017)**
+- grep `print(|debugPrint(` trong `lib/` → 0 match
+- KHÔNG chạy app (theo contract)
+
+## Cần test thiết bị thật (chưa cover — ghi rõ cho QA)
+
+- Timeout 8s lần đầu/khởi tạo lạnh + ảnh đêm thật (thiếu sáng/nhòe/rung).
+- Nhánh engine thật (`TextRecognizerError` native) — VM chỉ mô phỏng bằng
+  MissingPluginException.
+- Crop byte vùng overlay (P2) + đo có tăng tỉ lệ đọc biển 2 dòng xa không.
+- Torch auto-suggest chỉ là gợi ý text — chưa tự bật flash.

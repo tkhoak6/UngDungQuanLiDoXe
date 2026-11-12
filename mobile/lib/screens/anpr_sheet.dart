@@ -58,6 +58,9 @@ class _AnprSheetState extends State<AnprSheet> {
   _Phase _phase = _Phase.checking;
   bool _torch = false;
   String? _warn;
+  // MO-017: OCR thô khi có chữ nhưng không khớp biển số — hiện cho user
+  // sửa/dùng thay vì rớt về "Chưa đọc được" chung chung.
+  String? _rawOcr;
   List<String> _candidates = const [];
   String? _picked;
   final _edit = TextEditingController();
@@ -170,8 +173,13 @@ class _AnprSheetState extends State<AnprSheet> {
     }
   }
 
-  /// Chụp thủ công (V1) → ML Kit on-device, timeout 8s → phân nhánh:
-  /// 0 ứng viên: ở lại + warning; 1: màn confirm/sửa; nhiều: sheet chọn.
+  /// Chụp thủ công (V1) → ML Kit on-device, timeout 8s → phân nhánh
+  /// MO-017 (mỗi nguyên nhân 1 message + hành động riêng):
+  /// - engine/timeout: ở lại camera + warning + nút chính thành "Thử lại".
+  /// - empty: gợi ý đủ sáng/gần/chắc (+ bật flash nếu đang tắt).
+  /// - unmatched (có chữ, không khớp biển): sang màn confirm với text gốc
+  ///   để user sửa/dùng — không rớt về "Chưa đọc được" chung chung.
+  /// - 1 ứng viên: confirm/sửa; nhiều: sheet chọn.
   Future<void> _capture() async {
     final cam = _cam;
     if (cam == null || !cam.value.isInitialized || _phase != _Phase.ready) {
@@ -180,6 +188,7 @@ class _AnprSheetState extends State<AnprSheet> {
     setState(() {
       _phase = _Phase.processing;
       _warn = null;
+      _rawOcr = null;
     });
     String? path;
     try {
@@ -190,20 +199,35 @@ class _AnprSheetState extends State<AnprSheet> {
       final text = await rec.recognize(path).timeout(
             const Duration(seconds: 8),
           );
+      final kind = Anpr.classify(text: text);
+      if (!mounted) return;
+      if (kind == AnprFailureKind.empty) {
+        setState(() {
+          _phase = _Phase.ready;
+          _warn = Anpr.hintFor(kind, torchOn: _torch);
+        });
+        return;
+      }
       final cands = Anpr.extractCandidates(text);
       if (!mounted) return;
       if (cands.isEmpty) {
+        // Có chữ nhưng không khớp biển VN (VD nhòe 1 ký tự, biển 2 dòng
+        // đọc thiếu) — cho user sửa/dùng, giữ text gốc để đối chiếu.
+        _rawOcr = text;
+        _edit.text = Anpr.display(Anpr.bestEffort(text));
         setState(() {
-          _phase = _Phase.ready;
-          _warn = 'Chưa đọc được — thử gần hơn / đủ sáng.';
+          _candidates = const [];
+          _phase = _Phase.confirm;
         });
       } else if (cands.length == 1) {
+        _rawOcr = null;
         _edit.text = Anpr.display(cands.single);
         setState(() {
           _candidates = cands;
           _phase = _Phase.confirm;
         });
       } else {
+        _rawOcr = null;
         setState(() {
           _candidates = cands;
           _picked = cands.first;
@@ -214,14 +238,22 @@ class _AnprSheetState extends State<AnprSheet> {
       if (mounted) {
         setState(() {
           _phase = _Phase.ready;
-          _warn = 'Xử lý quá lâu — thử chụp lại.';
+          _warn = Anpr.hintFor(AnprFailureKind.timeout);
+        });
+      }
+    } on AnprEngineException {
+      // Engine lỗi (khởi tạo lạnh/model/native) — khác "ảnh xấu".
+      if (mounted) {
+        setState(() {
+          _phase = _Phase.ready;
+          _warn = Anpr.hintFor(AnprFailureKind.engine);
         });
       }
     } catch (_) {
       if (mounted) {
         setState(() {
           _phase = _Phase.ready;
-          _warn = 'Đọc ảnh lỗi — thử chụp lại.';
+          _warn = Anpr.hintFor(AnprFailureKind.engine);
         });
       }
     } finally {
@@ -443,7 +475,10 @@ class _AnprSheetState extends State<AnprSheet> {
             const SizedBox(width: AppGaps.s8),
             Expanded(
               child: PrimaryButton(
-                label: processing ? 'Đang đọc…' : 'Chụp',
+                // MO-017: sau thất bại, nút chính thành "Thử lại".
+                label: processing
+                    ? 'Đang đọc…'
+                    : (_warn == null ? 'Chụp' : 'Thử lại'),
                 loading: processing,
                 minHeight: 56,
                 onPressed: processing ? null : _capture,
@@ -473,7 +508,10 @@ class _AnprSheetState extends State<AnprSheet> {
   }
 
   /// 1 ứng viên: user sửa tay + gợi ý fuzzy rồi mới điền (spec §2.2.3-4).
+  /// MO-017: nhánh unmatched (có chữ, không khớp biển) tái dùng màn này —
+  /// thêm dòng "Máy đọc được …" + field prefill best-effort để sửa/dùng.
   Widget _confirm() {
+    final raw = _rawOcr;
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -482,6 +520,22 @@ class _AnprSheetState extends State<AnprSheet> {
             'Kiểm tra lại biển số trước khi tiếp tục.',
             style: AppText.body,
           ),
+          if (raw != null && raw.trim().isNotEmpty) ...[
+            const SizedBox(height: AppGaps.s8),
+            Container(
+              padding: const EdgeInsets.all(AppGaps.s12),
+              decoration: BoxDecoration(
+                color: AppColors.warningTint,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.warning),
+              ),
+              child: Text(
+                'Máy đọc được: «${Anpr.ocrSnippet(raw)}» — '
+                'chưa khớp biển số. Sửa lại rồi bấm Điền vào form.',
+                style: AppText.body,
+              ),
+            ),
+          ],
           const SizedBox(height: AppGaps.s12),
           ListenableBuilder(
             listenable: _edit,
@@ -534,6 +588,7 @@ class _AnprSheetState extends State<AnprSheet> {
               onPressed: () => setState(() {
                 _phase = _Phase.ready;
                 _warn = null;
+                _rawOcr = null;
               }),
               child: const Text('Chụp lại'),
             ),
@@ -589,6 +644,7 @@ class _AnprSheetState extends State<AnprSheet> {
             onPressed: () => setState(() {
               _phase = _Phase.ready;
               _warn = null;
+              _rawOcr = null;
             }),
             child: const Text('Chụp lại'),
           ),
