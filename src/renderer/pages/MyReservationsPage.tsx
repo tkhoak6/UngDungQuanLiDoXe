@@ -10,6 +10,8 @@ import { callApi } from '../lib/api';
 import { mockApi } from '../lib/mockApi';
 import { formatDateShort, normalizePlate, todayLocal } from '../lib/format';
 import type { CustomerReservationRow, CustomerVehicle, Reservation, ZoneAvailability } from '../types';
+import { NotifyFallbackBanner, NotifyRationaleDialog } from '../components/NotifyBanner';
+import { shouldShowNotifyRationale } from '../lib/notify';
 
 let toastSeq = 500;
 
@@ -62,7 +64,7 @@ function minutesToExpiry(expiresAt: string, nowMs: number): number {
   return Math.floor((t - nowMs) / 60000);
 }
 
-export function MyReservationsPage(): JSX.Element {
+export function MyReservationsPage({ highlightCode = null }: { highlightCode?: string | null } = {}): JSX.Element {
   const [zones, setZones] = useState<ZoneAvailability[]>([]);
   const [zoneId, setZoneId] = useState<number | ''>('');
   const [plate, setPlate] = useState('');
@@ -86,6 +88,8 @@ export function MyReservationsPage(): JSX.Element {
   const [cancelBusy, setCancelBusy] = useState(false);
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // FE-025 (spec §5.1): rationale sau giữ chỗ thành công đầu tiên (tối đa 2 lần).
+  const [rationale, setRationale] = useState(false);
   const pushToast = useCallback((tone: ToastItem['tone'], text: string) => {
     const id = toastSeq++;
     setToasts((t) => [...t.slice(-2), { id, tone, text }]);
@@ -157,6 +161,13 @@ export function MyReservationsPage(): JSX.Element {
 
   const pendingCount = rows.filter((r) => r.status === 'pending').length;
   const quotaReached = pendingCount >= 2; // chặn mềm phía client (server COUNT là chốt)
+
+  // FE-025: deep-link E2 — scroll tới card mã sau khi rows render.
+  useEffect(() => {
+    if (!highlightCode) return;
+    const el = document.querySelector(`[data-rsv-code="${highlightCode}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightCode, rows]);
   const activeZone = zones.find((z) => z.zone_id === zoneId) ?? null;
 
   // ---- FE-024 đặt nhanh 24/24: start = now, end = now + duration (tràn qua đêm).
@@ -196,6 +207,7 @@ export function MyReservationsPage(): JSX.Element {
     }
     setSuccess(res.data ?? null);
     pushToast('success', `Đã giữ chỗ — mã ${res.data?.code}`);
+    if (shouldShowNotifyRationale()) setRationale(true);
     void loadMine(true);
     void loadZones();
   }
@@ -241,6 +253,7 @@ export function MyReservationsPage(): JSX.Element {
     }
     setSuccess(res.data ?? null);
     pushToast('success', `Đã giữ chỗ — mã ${res.data?.code}`);
+    if (shouldShowNotifyRationale()) setRationale(true);
     void loadMine(true);
     void loadZones();
   }
@@ -291,6 +304,9 @@ export function MyReservationsPage(): JSX.Element {
 
   return (
     <div>
+      {/* FE-025 (spec §5.2): banner fallback + countdown card đậm hơn là nguồn
+          chính khi toast tắt (countdown live đã có ở từng card bên dưới). */}
+      <NotifyFallbackBanner surface="reservations" />
       <div className="page-head">
         <div>
           <h1>Đặt chỗ</h1>
@@ -517,7 +533,16 @@ export function MyReservationsPage(): JSX.Element {
             const tone = r.status === 'pending' ? (soon ? 'warning' : 'success') : 'muted';
             const label = r.status === 'pending' ? (soon ? 'Sắp hết' : 'Giữ chỗ') : r.status === 'completed' ? 'Đã dùng' : r.status === 'expired' ? 'Hết hạn' : 'Đã hủy';
             return (
-              <div key={r.code} className="card" style={r.status !== 'pending' ? { opacity: 0.75 } : undefined}>
+              <div
+                key={r.code}
+                className="card"
+                data-rsv-code={r.code}
+                style={
+                  highlightCode === r.code
+                    ? { outline: '2px solid var(--color-primary)', outlineOffset: 2 }
+                    : r.status !== 'pending' ? { opacity: 0.75 } : undefined
+                }
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                   <span className="mono" style={{ fontSize: 16, fontWeight: 700 }}>{r.code}</span>
                   <Badge tone={tone}>{label}</Badge>
@@ -561,6 +586,16 @@ export function MyReservationsPage(): JSX.Element {
       )}
 
       <Toasts items={toasts} />
+      {/* FE-025 (spec §5.1): rationale sau giữ chỗ thành công đầu tiên. */}
+      {rationale && (
+        <NotifyRationaleDialog
+          trigger="reservation"
+          onDone={(granted) => {
+            setRationale(false);
+            if (granted) pushToast('success', 'Đã bật thông báo.');
+          }}
+        />
+      )}
     </div>
   );
 }

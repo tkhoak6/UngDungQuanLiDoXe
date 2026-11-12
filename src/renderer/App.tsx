@@ -1,8 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 import { AuthProvider, useAuth } from './store/auth';
 import { AppShell, type PageKey } from './layout/AppShell';
-import { LoginPage } from './pages/LoginPage';
-import { DashboardPage } from './pages/DashboardPage';
+import { LoginPage } from './pages/LoginPage';import { DashboardPage } from './pages/DashboardPage';
 import { ZonesPage } from './pages/ZonesPage';
 import { SessionsPage } from './pages/SessionsPage';
 import { PassesPage } from './pages/PassesPage';
@@ -15,7 +14,8 @@ import { StaffProfilePage } from './pages/StaffProfilePage';
 import { GuestPage } from './pages/GuestPage';
 import { EmptyState, Toasts } from './components/ui';
 import { PERM_META, hasNoPerms } from './lib/perms';
-import type { StaffPermissionKey } from './types';
+import { subscribeNotifyDeepLink } from './lib/notify';
+import type { NotifyDeepLink, StaffPermissionKey } from './types';
 
 // FE-020 S4: deep-link guard theo perms (staff gọi URL/page bị thu quyền →
 // redirect Dashboard + toast tiếng Việt, cùng pattern DS-006 §1).
@@ -38,6 +38,34 @@ function Root(): JSX.Element {
   const [page, setPage] = useState<PageKey>('dashboard');
   const [denied, setDenied] = useState(false);
   const [deniedPerm, setDeniedPerm] = useState<StaffPermissionKey | null>(null);
+  // FE-025 (nối BE-021): deep-link từ Toast scheduler (event `notify:deep-link`).
+  const [deepLink, setDeepLink] = useState<NotifyDeepLink | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Đăng ký listener 1 lần — điều hướng đúng tab + highlight row.
+  useEffect(() => {
+    return subscribeNotifyDeepLink((link) => {
+      setDeepLink(link);
+      const text =
+        link.event === 'E1' ? `Vé ${link.pass_code ?? ''} sắp hết — đã mở màn Vé tháng.`
+        : link.event === 'E2' ? `Mã ${link.code ?? ''} sắp tới giờ — đã mở màn Đặt chỗ.`
+        : link.event === 'E3' ? `Khu ${link.zone_code ?? ''} vừa đầy — đã mở Sơ đồ.`
+        : 'Ca chưa chốt — đã mở màn Chấm công.';
+      setNotice(text);
+      window.setTimeout(() => setNotice(null), 5000);
+    });
+  }, []);
+
+  // Deep-link → tab đích (staff/admin shell; customer luôn ở GuestPage nên
+  // GuestPage tự map tab con — App chỉ giữ highlight payload).
+  useEffect(() => {
+    if (!deepLink || role === 'customer' || role === 'guest') return;
+    if (deepLink.tab === 'passes') setPage('passes');
+    else if (deepLink.tab === 'attendance') setPage('attendance');
+    else if (deepLink.tab === 'map') setPage('guest');
+    // tab 'reservations' (E2 của customer): staff không có màn giữ chỗ →
+    // ở yên Check-in/out + toast mã để đối soát tại quầy.
+  }, [deepLink, role]);
 
   // Cross-screen rule §4: `/` focuses search, `Esc` closes topmost layer
   // (dialogs handle Esc themselves + return focus to trigger).
@@ -91,7 +119,7 @@ function Root(): JSX.Element {
   // carries name + Đăng xuất instead — see GuestPage).
   const effective: PageKey = role === 'guest' ? 'guest' : page === 'guest' && role !== 'guest' ? page : page;
 
-  if (role === 'guest' || role === 'customer') return <GuestPage />;
+  if (role === 'guest' || role === 'customer') return <GuestPage deepLink={deepLink} />;
 
   // Guard role → page access (api-contract.md §11 permission matrix).
   // DS-006: staff deep-linking to Nhân viên is bounced with a warning toast.
@@ -116,7 +144,7 @@ function Root(): JSX.Element {
   // Guest map is always chromeless — no sidebar/topbar for any role (spec §g).
   // FE-006: admin/staff mở Sơ đồ từ nav có nút "Trở lại" → về trang shell
   // mặc định theo role (admin → dashboard, staff → sessions).
-  if (safePage === 'guest') return <GuestPage onBack={() => setPage(role === 'staff' ? 'sessions' : 'dashboard')} />;
+  if (safePage === 'guest') return <GuestPage onBack={() => setPage(role === 'staff' ? 'sessions' : 'dashboard')} deepLink={deepLink} />;
 
   const deniedText = deniedPerm
     ? `Bạn không có quyền ${PERM_META[deniedPerm].label} — liên hệ quản lý.`
@@ -146,17 +174,23 @@ function Root(): JSX.Element {
         {safePage === 'dashboard' && <DashboardPage onGoZones={() => setPage('zones')} />}
         {safePage === 'zones' && <ZonesPage />}
         {safePage === 'sessions' && <SessionsPage />}
-        {safePage === 'passes' && <PassesPage />}
+        {safePage === 'passes' && (
+          <PassesPage highlightPassCode={deepLink?.tab === 'passes' ? (deepLink.pass_code ?? null) : null} />
+        )}
         {safePage === 'revenue' && <RevenuePage />}
         {safePage === 'management' && <ManagementPage onNavigate={setPage} />}
         {safePage === 'activity' && <ActivityPage />}
-        {safePage === 'attendance' && <AttendancePage />}
+        {safePage === 'attendance' && (
+          <AttendancePage highlightAttendanceId={deepLink?.tab === 'attendance' ? (deepLink.attendance_id ?? null) : null} />
+        )}
         {safePage === 'users' && <UsersPage />}
         {safePage === 'profile' && <StaffProfilePage />}
       </AppShell>
       {/* DS-006 §1: deep-link guard toast for staff hitting Nhân viên */}
       {/* FE-020 S4: toast theo đúng quyền bị thiếu (label tiếng Việt). */}
       {denied && <Toasts items={[{ id: 0, tone: 'danger', text: deniedText }]} />}
+      {/* FE-025: toast xác nhận điều hướng từ Toast scheduler (E1–E4). */}
+      {notice !== null && <Toasts items={[{ id: 1, tone: 'success', text: notice }]} />}
     </>
   );
 }

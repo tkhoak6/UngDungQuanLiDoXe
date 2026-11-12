@@ -4,12 +4,13 @@
 
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Alert, Badge, Button, Dialog, EmptyState, RetryPanel, SkeletonRows, Toasts, type ToastItem } from '../components/ui';
+import { notifyPermissionLabel } from '../components/NotifyBanner';
 import { callApi } from '../lib/api';
 import { mockApi } from '../lib/mockApi';
 import { formatDateTime, formatVND } from '../lib/format';
 import { LAST_BACKUP_KEY, readSettingsCache } from '../lib/management';
 import { useAuth } from '../store/auth';
-import type { ActivityRow } from '../types';
+import type { ActivityRow, NotifyEvent, NotifyTestOutput } from '../types';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -51,6 +52,10 @@ export function ManagementSafety(): JSX.Element {
   const [logs, setLogs] = useState<ActivityRow[]>([]);
   const [logsTotal, setLogsTotal] = useState(0);
   const [page, setPage] = useState(1);
+  // FE-025 (nối BE-021 `notify:test`): user tự kiểm tra Toast + deep-link.
+  const [notifyBusy, setNotifyBusy] = useState<string | null>(null);
+  const [notifyOut, setNotifyOut] = useState<NotifyTestOutput | null>(null);
+  const [notifyErr, setNotifyErr] = useState('');
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const pushToast = useCallback((tone: ToastItem['tone'], text: string) => {
@@ -115,8 +120,30 @@ export function ManagementSafety(): JSX.Element {
     setFileSize(file.size);
   }
 
-  async function handleRestore(): Promise<void> {
-    // Backend thật mở open-dialog ở main (không nhận binary từ renderer);
+  // FE-025 (nối BE-021 `notify:test`): dry-run quét thật / bắn Toast mẫu để
+  // QA click thử deep-link. Guard none + yêu cầu login (backend).
+  async function handleNotifyTest(sample?: NotifyEvent): Promise<void> {
+    const key = sample ?? 'dry';
+    setNotifyBusy(key);
+    setNotifyErr('');
+    const res = await callApi((a) => a.testNotify(sample), () => mockApi.testNotify(sample));
+    setNotifyBusy(null);
+    if (!res.ok || !res.data) {
+      const msg = res.error ?? 'Kiểm tra thông báo thất bại';
+      setNotifyErr(msg);
+      pushToast('danger', msg);
+      return;
+    }
+    setNotifyOut(res.data);
+    pushToast(
+      'success',
+      sample
+        ? `Đã bắn Toast mẫu ${sample} — bấm vào Toast để thử deep-link.`
+        : `Quét xong: ${res.data.fired.length} sẽ bắn · ${res.data.deferred.length} hoãn tới 06:05.`,
+    );
+  }
+
+  async function handleRestore(): Promise<void> {    // Backend thật mở open-dialog ở main (không nhận binary từ renderer);
     // metadata file chọn ở trên chỉ để đối soát trước khi xác nhận.
     setRestoring(true);
     const res = await callApi((a) => a.restoreFromFile(), () => mockApi.restoreFromFile());
@@ -193,6 +220,55 @@ export function ManagementSafety(): JSX.Element {
         </Button>
         <p style={{ fontSize: 12, color: 'var(--color-text-60)' }}>
           File .db chứa toàn bộ vé, vé tháng, ca trực. Lưu ra USB/ổ rời.
+        </p>
+      </section>
+
+      <section className="card" aria-labelledby="safe-notify">
+        <h3 id="safe-notify" style={{ margin: '0 0 8px', fontSize: 16 }}>Thông báo desktop (thử nghiệm)</h3>
+        <p style={{ fontSize: 14, margin: '0 0 8px' }}>
+          Quyền hệ thống: <Badge tone={notifyPermissionLabel() === 'Đang bật' ? 'success' : 'warning'}>{notifyPermissionLabel()}</Badge>
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <Button variant="neutral" disabled={notifyBusy !== null} aria-busy={notifyBusy === 'dry'} onClick={() => void handleNotifyTest()}>
+            {notifyBusy === 'dry' ? 'Đang quét…' : 'Quét ngay (dry-run)'}
+          </Button>
+          {(['E1', 'E2', 'E3', 'E4'] as const).map((ev) => (
+            <Button
+              key={ev}
+              variant="neutral"
+              disabled={notifyBusy !== null}
+              aria-busy={notifyBusy === ev}
+              onClick={() => void handleNotifyTest(ev)}
+              aria-label={`Bắn Toast mẫu sự kiện ${ev}`}
+            >
+              {notifyBusy === ev ? 'Đang bắn…' : `Gửi thử ${ev}`}
+            </Button>
+          ))}
+        </div>
+        {notifyErr !== '' && <Alert tone="danger">{notifyErr}</Alert>}
+        {notifyOut !== null && (
+          <div role="status" style={{ fontSize: 14 }}>
+            {notifyOut.quiet && <p>Đang trong giờ im lặng (22:00–06:00) — E1/E4 hoãn tới 06:05.</p>}
+            {notifyOut.fired.length > 0 && (
+              <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
+                {notifyOut.fired.map((f, i) => (
+                  <li key={`${f.event}-${i}`} className="mono">
+                    {f.event} · {f.title} · {f.entity} · {f.mode === 'toast' ? 'Toast' : f.mode === 'silent' ? 'Tray câm' : f.mode === 'deferred' ? 'Hoãn 06:05' : 'Chỉ badge'}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {notifyOut.deferred.length > 0 && (
+              <p>Hoãn {notifyOut.deferred.length} mục tới 06:05 (E1/E4 trong giờ im lặng).</p>
+            )}
+            {notifyOut.fired.length === 0 && notifyOut.deferred.length === 0 && (
+              <p>Không có gì tới hạn — hẹn giờ vẫn chạy (E1 quét 06:30, E2/E4 theo vé/ca).</p>
+            )}
+          </div>
+        )}
+        <p style={{ fontSize: 12, color: 'var(--color-text-60)', margin: '8px 0 0' }}>
+          Bấm vào Toast mẫu để mở đúng tab + highlight (E1 vé · E2 mã giữ chỗ · E3 Sơ đồ · E4 Chấm công).
+          Tắt Toast ở OS vẫn có banner nhắc trong các màn liên quan.
         </p>
       </section>
 

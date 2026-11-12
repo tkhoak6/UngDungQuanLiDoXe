@@ -5,15 +5,19 @@ import '../core/format.dart';
 import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
 import '../widgets/plate_field.dart';
 import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
 
-/// Vé tháng (P3 xếp dọc): Section A vé của tôi + Section B đăng ký mới.
+/// Vé tháng (P3 xếp dọc): Section A vé đang dùng + Section B vé của tôi.
+/// MO-015 E1: [highlightCode] từ deep-link → viền + badge pulse 1 lần.
 class PassesScreen extends ConsumerStatefulWidget {
-  const PassesScreen({super.key});
+  const PassesScreen({super.key, this.highlightCode});
+
+  final String? highlightCode;
 
   @override
   ConsumerState<PassesScreen> createState() => _PassesScreenState();
@@ -78,6 +82,8 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
                 'Đã gửi đăng ký — mang tiền ra quầy để kích hoạt.'),
           ),
         );
+        // MO-015: rationale xin quyền sau hành động liên quan đầu tiên.
+        await maybeShowRationale(context, ref);
       }
     } on RepoException catch (e) {
       setState(() => _err = e.message);
@@ -126,6 +132,11 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
           return ListView(
             padding: const EdgeInsets.all(AppGaps.s16),
             children: [
+              // MO-015 §5.2: fallback khi user tắt thông báo.
+              const NotifFallbackBanner(
+                message:
+                    'Thông báo đang tắt — có thể lỡ nhắc vé sắp hết hạn.',
+              ),
               const Text('Vé đang dùng', style: AppText.cardTitle),
               const SizedBox(height: AppGaps.s12),
               FutureBuilder<List<SessionRow>>(
@@ -179,16 +190,30 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
                       'Đăng ký ở dưới — không thanh toán online, trả tiền tại quầy khi nhận vé.',
                 )
               else
-                ...passes.map((p) => Card(
-                      child: ListTile(
-                        minVerticalPadding: AppGaps.s12,
-                        title: PlateText(p.passCode, size: 14),
-                        subtitle: Text(
-                            '${p.licensePlate} · ${p.zoneCode}\n${p.startDate} → ${p.endDate} · ${vnd(p.price)}'),
-                        isThreeLine: true,
-                        trailing: _passBadge(p.status),
-                      ),
-                    )),
+                ...passes.map((p) {
+                  final focused =
+                      p.passCode == widget.highlightCode;
+                  final tile = ListTile(
+                    minVerticalPadding: AppGaps.s12,
+                    title: PlateText(p.passCode, size: 14),
+                    subtitle: Text(
+                        '${p.licensePlate} · ${p.zoneCode}\n${p.startDate} → ${p.endDate} · ${vnd(p.price)}'),
+                    isThreeLine: true,
+                    trailing: focused
+                        ? _PulseBadge(child: _passBadge(p.status))
+                        : _passBadge(p.status),
+                  );
+                  if (!focused) return Card(child: tile);
+                  // MO-015 E1: highlight row từ deep-link.
+                  return Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: AppColors.primary, width: 2),
+                    ),
+                    child: Card(margin: EdgeInsets.zero, child: tile),
+                  );
+                }),
               if (warn) ...[
                 const SizedBox(height: AppGaps.s8),
                 const Text(
@@ -287,5 +312,50 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
       default:
         return AppBadge.warning(s);
     }
+  }
+}
+
+/// MO-015 E1: badge pulse 1 lần khi mở từ deep-link.
+/// Tôn `disableAnimations` (reduced motion).
+class _PulseBadge extends StatefulWidget {
+  const _PulseBadge({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PulseBadge> createState() => _PulseBadgeState();
+}
+
+class _PulseBadgeState extends State<_PulseBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.of(context).disableAnimations) return widget.child;
+    return ScaleTransition(
+      scale: TweenSequence<double>([
+        TweenSequenceItem(
+            tween: Tween(begin: 1, end: 1.12), weight: 1),
+        TweenSequenceItem(
+            tween: Tween(begin: 1.12, end: 1), weight: 1),
+      ]).animate(CurvedAnimation(parent: _c, curve: Curves.easeOut)),
+      child: widget.child,
+    );
   }
 }

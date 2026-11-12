@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../core/format.dart';
 import '../core/tokens.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
@@ -181,6 +182,38 @@ class _MapScreenState extends ConsumerState<MapScreen>
                             setState(() => _tick++),
                       ),
                     ),
+                  // MO-015 E3: banner Danger khi zone đầy + nút tìm khu còn chỗ.
+                  if (full)
+                    _FullZoneBanner(
+                      occupied: cells
+                          .where((c) => c.status == 'occupied')
+                          .length,
+                      total: cells.length,
+                      zoneCode: zone.code,
+                      onFindFree: () async {
+                        final av = await repo.availability();
+                        ZoneAvailability? pick;
+                        for (final a in av) {
+                          if (a.zoneId != current &&
+                              a.freeSpots > 0) {
+                            pick = a;
+                            break;
+                          }
+                        }
+                        if (!context.mounted) return;
+                        if (pick == null) {
+                          ScaffoldMessenger.of(context)
+                              .showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Các khu đều đã đầy — vui lòng quay lại sau.')),
+                          );
+                          return;
+                        }
+                        final target = pick.zoneId;
+                        setState(() => _zoneId = target);
+                      },
+                    ),
                   Expanded(
                     child: cells.isEmpty
                         ? const Center(
@@ -302,8 +335,7 @@ class _MapScreenState extends ConsumerState<MapScreen>
   }
 
   void _detail(BuildContext context, SpotCell c, SpotUiState st,
-      ParkingZone zone, AppUser? session) {
-    showAppSheet(
+      ParkingZone zone, AppUser? session) {    showAppSheet(
       context,
       Column(
         mainAxisSize: MainAxisSize.min,
@@ -361,6 +393,60 @@ class _Legend extends StatelessWidget {
         const SizedBox(width: AppGaps.s4),
         Text(label, style: AppText.helper),
       ],
+    );
+  }
+}
+
+/// MO-015 E3: strip Danger khi zone đầy (in-app, không push) + nút
+/// preselect khu còn chỗ. role=status (không alert gây giật SR).
+class _FullZoneBanner extends StatelessWidget {
+  const _FullZoneBanner({
+    required this.occupied,
+    required this.total,
+    required this.zoneCode,
+    required this.onFindFree,
+  });
+
+  final int occupied;
+  final int total;
+  final String zoneCode;
+  final Future<void> Function() onFindFree;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: 'Khu $zoneCode đã đầy',
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(horizontal: AppGaps.s16),
+        padding: const EdgeInsets.all(AppGaps.s12),
+        decoration: BoxDecoration(
+          color: AppColors.dangerTint,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.danger),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              e3BannerText(occupied: occupied, total: total),
+              style: AppText.helper.copyWith(
+                color: AppColors.danger,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: AppGaps.s8),
+            SizedBox(
+              height: 44,
+              child: OutlinedButton(
+                onPressed: onFindFree,
+                child: const Text(e3FindButton),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

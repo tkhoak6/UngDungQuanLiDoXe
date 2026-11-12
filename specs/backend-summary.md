@@ -782,3 +782,65 @@ DB packaged app nằm ở `<userData>/parking.db`.
 ## BE-020 — Runner migration-008 (nối DB-008)
 
 - `src/main/db.ts` → `runMigration008()` sau 007 trong `openDatabase()` (thứ tự 002 → … → 008): detect CHECK mới (`BETWEEN 900 AND 14400` trong `sqlite_master` của `reservations`) thì skip không backup (DB mới bootstrap `schema.sql` đã gộp v008); thiếu → checkpoint WAL + copy `parking.db` → `parking.db.bak-008`, `exec` nguyên file `specs/migration-008-reservations-24h.sql`, rồi `foreign_key_check` phải sạch. Idempotent 2 lớp — chạy N lần không lỗi.
+
+## BE-021 — Thông báo desktop V1 (nối DS-014 `specs/notifications.md` §E1–E4, local scheduler)
+
+- `src/main/notifications.ts` (mới, KHÔNG thêm dep — timer = `setTimeout`/`setInterval`
+  built-in, `node-schedule` không cần thiết cho 4 job): `start/stopNotificationScheduler`,
+  `scanE1/scanE2Due/scanE4Due/pollE3` (quét từ SQLite), per-entity
+  `schedule/cancelReservationReminder` (E2) + `schedule/cancelShiftReminder` (E4),
+  `suppressPassReminders` (E1), `runNotificationCatchup` (check bù + `notify:test`),
+  pure helpers export để test (`isQuietHour/daysLeft/reservationStart/shiftEndDate/msUntil`).
+  Toast = Electron `Notification` lazy qua `createRequire` (headless/vitest không có
+  Electron vẫn chạy — `notify:test` dry-run được); click → focus window + gửi
+  `notify:deep-link` (renderer tự đăng ký, preload KHÔNG đụng). Mọi lỗi nuốt +
+  ghi `notify-auto.log` cạnh DB — không crash app quầy.
+- E1: vé `active` của customer đang login (`customer_phone` match `me.phone` —
+  staff xem vé khách KHÔNG nhận), milestone calendar `D-3` (mọi giờ) / `D-0`
+  (từ 07:00), copy Warning/Danger §1.2 (giá = `pass.price` vi-VN ₫), ≥2 vé cùng
+  mốc → 1 summary; tối đa 2/vé (state `notify-state.json` cạnh DB:
+  `{pass_code}#D3|D0`); quiet → deferred 06:05; gia hạn (`passes:renew`) →
+  `suppressPassReminders` mã cũ.
+- E2: fire `start − 20p` (đặt muộn → timer 30s sau giữ, §2.1); lúc bắn verify lại
+  `pending` + chính chủ (`user_id`/`customer_phone` = me); quá hạn không push
+  thêm (§2.4); quiet-hours **bypass nhưng silent** (§6); countdown in-app giữ nguyên.
+- E3: poll `v_zone_availability` 60s (không tăng tần suất poll), toast quầy khi
+  `free_spots == 0` + gợi ý zone còn chỗ nhiều nhất, cooldown 15p/zone
+  (state `notify-state.json`); hồi chỗ → tự hết (không push "đã có chỗ").
+  Banner in-app + preselect zone là việc renderer (FE). V1 KHÔNG dùng
+  Notification `actions` (Electron Windows chỉ hỗ trợ macOS) — tap Toast mở tab
+  Đặt chỗ focus mã (tương đương "Xem mã"); "Hủy" thực hiện trong app (tránh bấm nhầm, §2.3).
+- E4: `attendance:check-in` → timer `end + 30p` (end tính trên `work_date`,
+  ca đêm `end <= start` +1 ngày nên NIGHT 22:00→06:00 nhắc 06:30 bình thường);
+  `check-out` (kể cả chốt bù) hủy timer; verify còn treo + đúng NV lúc bắn;
+  tối đa 1 push/ca; ca ngày kéo qua 22:00 → hoãn 06:05 (§6).
+- Check bù lúc mở app: rebuild timer E2/E4 từ SQLite + `runNotificationCatchup`
+  (E2 quá fire-time nhưng còn hạn → bắn bù ngay; E1/E4 trong quiet → deferred 06:05).
+  Daily E1 06:30 + sweep 60s (E1/E2/E4 tới hạn + poll E3).
+- `src/main/main.ts`: `startNotificationScheduler(db, () => mainWindow)` sau backup
+  job (try/catch riêng) + `stopNotificationScheduler()` ở `before-quit`. KHÔNG restart app.
+- `src/main/ipc-handlers.ts`: `setNotifyUserProvider(getCurrentUser)` 1 lần trong
+  `registerIpcHandlers`; hooks try/catch (không phá kết quả nghiệp vụ) —
+  `customer:reserve` (late = gap <20p) / `reserve-cancel` + check-in consume mã /
+  `attendance:check-in|out` / `passes:renew`; IPC mới duy nhất
+  `notify:test {sample?} → {quiet, fired[], deferred[]}` (guard `none` + yêu cầu
+  login, validate enum E1–E4). IPC cũ KHÔNG đổi signature.
+- Types (`src/shared/types.ts`): `NotifyEvent/Tab/DeepLink/FireMode/FireItem`,
+  `NotifyTestInput/Output`, `NOTIFY_DEEP_LINK_CHANNEL` + entry `ApiMap['notify:test']`.
+  Contract cho @frontend: `api-contract.md` §18.
+- GHI CHÚ cho @frontend: đăng ký `ipcRenderer.on('notify:deep-link')` mở đúng
+  tab + highlight (`pass_code`/`code`/`zone_code`/`attendance_id`); banner fallback
+  khi OS tắt thông báo + rationale xin quyền §5.1 (desktop: hướng dẫn
+  `Settings → System → Notifications`); toggle trạng thái trong Cá nhân/Tôi.
+
+### Verification (BE-021)
+
+- `npx tsc --noEmit` → **pass**.
+- `npx vitest run src/main/` → **32/32 pass** (notifications 16 mới: quiet biên
+  22:00/06:00, daysLeft 0/3/−1, E2 fire 07:40 + qua đêm, ca đêm +1 ngày,
+  msUntil daily/defer, copy VN; fee 10 + qr 6 cũ giữ nguyên).
+- IPC runtime + Toast thật chưa chạy (cần Electron GUI + DB có data mẫu E1–E4) →
+  smoke thủ công: login customer có vé D-3 → Toast sau ≤60s; đặt chỗ cách 25p →
+  Toast trước 20p; login staff lấp đầy 1 zone → Toast 1 lần; vào ca test + chờ
+  end+30p (hoặc `notify:test {sample:'E4'}`) → Toast click mở đúng tab.
+- **Status: partially_verified** (logic + types + unit pass; runtime GUI chờ QA tay).

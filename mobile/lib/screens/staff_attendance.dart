@@ -4,13 +4,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/tokens.dart';
 import '../core/retained_future.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../repos/staff_repo.dart';
 import '../state/providers.dart';
 import '../widgets/ui.dart';
 
 /// Chấm công: card ca hiện tại + Vào/Ra + lịch sử 7 ngày + banner quên chốt.
+/// MO-015 E4: [openCheckout] từ deep-link → autofocus ô tiền cuối ca.
 class AttendanceScreen extends ConsumerStatefulWidget {
-  const AttendanceScreen({super.key});
+  const AttendanceScreen({super.key, this.openCheckout = false});
+
+  final bool openCheckout;
 
   @override
   ConsumerState<AttendanceScreen> createState() =>
@@ -67,6 +71,11 @@ class _AttendanceScreenState
       body: ListView(
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [
+          // MO-015 §5.2: fallback khi user tắt thông báo.
+          const NotifFallbackBanner(
+            message:
+                'Thông báo đang tắt — nhớ chốt ca đúng giờ.',
+          ),
           FutureBuilder<AttendanceRow?>(
             // MO-013: future giữ qua rebuild — setState lúc submit không tạo
             // future mới, ô tiền/ghi chú không bị unmount/mất focus.
@@ -141,8 +150,25 @@ class _AttendanceScreenState
                                             .trim()) ??
                                     0,
                               );
+                              // MO-015 E4: hẹn nhắc end+30p.
+                              try {
+                                await NotificationScheduler
+                                    .scheduleShiftReminder(
+                                  staffRepo: repo,
+                                  userId: me.id,
+                                  checkInAt: DateTime.now(),
+                                );
+                              } catch (_) {
+                                // Lên lịch thất bại → banner trong app
+                                // vẫn nhắc (spec §4.4).
+                              }
                               if (mounted) {
                                 _refresh();
+                                // MO-015: rationale sau vào ca lần đầu.
+                                if (context.mounted) {
+                                  await maybeShowRationale(
+                                      context, ref);
+                                }
                               }
                             } on Object catch (e) {
                               setState(() => _err =
@@ -158,6 +184,32 @@ class _AttendanceScreenState
                           },
                         ),
                       ] else if (att.checkOutAt == null) ...[
+                        // MO-015 E4: banner chốt bù (1 push + 1 banner).
+                        if (widget.openCheckout) ...[
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(
+                                AppGaps.s12),
+                            decoration: BoxDecoration(
+                              color: AppColors.warningTint,
+                              borderRadius:
+                                  BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: AppColors.warning),
+                            ),
+                            child: Text(
+                              'Bạn chưa chốt ca ${att.shiftName} — nhập tiền cuối ca để chốt bù.',
+                              style:
+                                  AppText.helper.copyWith(
+                                color:
+                                    AppColors.warningText,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(
+                              height: AppGaps.s12),
+                        ],
                         TextField(
                           controller: _closing,
                           keyboardType:
@@ -166,6 +218,8 @@ class _AttendanceScreenState
                             labelText:
                                 'Tiền cuối ca (VNĐ)',
                           ),
+                          // MO-015 E4 deep-link: focus sẵn ô chốt bù.
+                          autofocus: widget.openCheckout,
                         ),
                         const SizedBox(
                             height: AppGaps.s12),
@@ -193,6 +247,7 @@ class _AttendanceScreenState
                               _err = null;
                             });
                             try {
+                              final attId = att.id;
                               await repo.checkOutShift(
                                 me.id,
                                 closingCash: int.tryParse(
@@ -201,6 +256,13 @@ class _AttendanceScreenState
                                     0,
                                 note: _note.text,
                               );
+                              // MO-015 E4: chốt xong → hủy lịch nhắc.
+                              try {
+                                await NotificationScheduler
+                                    .cancelShiftReminder(attId);
+                              } catch (_) {
+                                // Bỏ qua.
+                              }
                               if (mounted) {
                                 _refresh();
                                 messenger

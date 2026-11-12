@@ -9,6 +9,7 @@ import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../repos/auth_repo.dart';
 import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
@@ -157,6 +158,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 .read(highContrastProvider.notifier)
                 .state = v,
           ),
+          // MO-015 §5.2: toggle trạng thái Thông báo + Mở cài đặt.
+          const NotifStatusTile(),
+          const SizedBox(height: AppGaps.s8),
           PrimaryButton(
             label: 'Đăng xuất',
             danger: true,
@@ -452,6 +456,8 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
               );
             },
           ),
+          // MO-015 §5.2: toggle trạng thái Thông báo + Mở cài đặt.
+          const NotifStatusTile(),
           const SizedBox(height: AppGaps.s12),
           PrimaryButton(
             label: 'Đăng xuất',

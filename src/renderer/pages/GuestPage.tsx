@@ -9,6 +9,7 @@ import { MyReservationsPage } from './MyReservationsPage';
 import { MyVehiclesPage } from './MyVehiclesPage';
 import { ProfilePage } from './ProfilePage';
 import type { SpotMapCell, ZoneAvailability } from '../types';
+import type { NotifyDeepLink } from '../types';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -30,9 +31,13 @@ const POLL_MS = 30000;
 interface GuestPageProps {
   /** Shell gọi khi bấm "Trở lại" (admin/staff xem Sơ đồ → về trang trước đó). */
   onBack?: () => void;
+  // FE-025 (nối BE-021): deep-link từ Toast scheduler — customer map sang tab
+  // con (passes→Xe của tôi, reservations→Đặt chỗ, map→Sơ đồ + preselect zone);
+  // guest ẩn danh + shell preview chỉ nhận map/preselect.
+  deepLink?: NotifyDeepLink | null;
 }
 
-export function GuestPage({ onBack }: GuestPageProps = {}): JSX.Element {
+export function GuestPage({ onBack, deepLink = null }: GuestPageProps = {}): JSX.Element {
   const { role, fullName, logout } = useAuth();
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState('');
@@ -66,6 +71,22 @@ export function GuestPage({ onBack }: GuestPageProps = {}): JSX.Element {
       cancelled = true;
     };
   }, [isCustomer]);
+
+  // FE-025: deep-link → tab con customer (E1 vé → Xe của tôi, E2 → Đặt chỗ,
+  // E3/E4 map). E4 (attendance) không có màn customer → bỏ qua.
+  useEffect(() => {
+    if (!deepLink || !isCustomer) return;
+    if (deepLink.tab === 'reservations') setTab('reserve');
+    else if (deepLink.tab === 'passes') setTab('vehicles');
+    else if (deepLink.tab === 'map') setTab('map');
+  }, [deepLink, isCustomer]);
+
+  // FE-025: E3 deep-link → preselect zone còn chỗ sau khi zones load.
+  useEffect(() => {
+    if (!deepLink || deepLink.tab !== 'map' || !deepLink.zone_code) return;
+    const hit = zones.find((z) => z.zone_code === deepLink.zone_code);
+    if (hit) setActiveZone(hit.zone_id);
+  }, [deepLink, zones]);
 
   function requestTab(next: CustomerTab): void {
     // Rời tab Hồ sơ khi form dirty → confirm dialog (P1.4 dirty-guard).
@@ -243,9 +264,17 @@ export function GuestPage({ onBack }: GuestPageProps = {}): JSX.Element {
       )}
 
       <main className="content" style={{ fontSize: kiosk ? 16 : undefined }}>
-        {isCustomer && tab === 'vehicles' && <MyVehiclesPage phone={phone} onGoMap={() => requestTab('map')} />}
+        {isCustomer && tab === 'vehicles' && (
+          <MyVehiclesPage
+            phone={phone}
+            onGoMap={() => requestTab('map')}
+            highlightPassCode={deepLink?.tab === 'passes' ? (deepLink.pass_code ?? null) : null}
+          />
+        )}
         {isCustomer && tab === 'history' && <MyHistoryPage />}
-        {isCustomer && tab === 'reserve' && <MyReservationsPage />}
+        {isCustomer && tab === 'reserve' && (
+          <MyReservationsPage highlightCode={deepLink?.tab === 'reservations' ? (deepLink.code ?? null) : null} />
+        )}
         {isCustomer && tab === 'profile' && <ProfilePage onDirtyChange={setProfileDirty} />}
         {(!isCustomer || tab === 'map') && (
         <>

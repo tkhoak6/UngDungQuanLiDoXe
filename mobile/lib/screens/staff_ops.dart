@@ -7,6 +7,7 @@ import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
 import '../widgets/plate_field.dart';
@@ -28,6 +29,9 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
   // MO-013: giữ Future khu qua rebuild — dropdown khu là sibling của ô biển
   // số, refire future mỗi setState gây nháy + rủi ro remount form.
   final _zonesRet = RetainedFuture<List<ParkingZone>>();
+
+  /// MO-015 E3: availability để disable khu đầy + toast 1 lần/cooldown.
+  final _availRet = RetainedFuture<List<ZoneAvailability>>();
   int? _zoneId;
   String _vehicleType = 'car';
   bool _saving = false;
@@ -131,22 +135,67 @@ class _CheckinScreenState extends ConsumerState<CheckinScreen> {
                   // refire mỗi setState gây nháy dropdown.
                   future: _zonesRet.of('zones', () => repo.zones()),
                   builder: (context, snap) {
-                    final zones =
-                        snap.data ?? _zonesRet.value ?? <ParkingZone>[];
-                    return DropdownButtonFormField<int>(
-                      key: ValueKey(_zoneId),
-                      initialValue: _zoneId,
-                      decoration: const InputDecoration(
-                          labelText: 'Khu'),
-                      items: zones
-                          .map((z) => DropdownMenuItem<int>(
-                                value: z.id,
-                                child: Text(
-                                    '${z.code} · ${z.name}'),
-                              ))
-                          .toList(),
-                      onChanged: (v) =>
-                          setState(() => _zoneId = v),
+                    final zones = snap.data ??
+                        _zonesRet.value ??
+                        <ParkingZone>[];
+                    return FutureBuilder<List<ZoneAvailability>>(
+                      future: _availRet.of(
+                          'avail', () => repo.availability()),
+                      builder: (context, aSnap) {
+                        final av = aSnap.data ??
+                            _availRet.value ??
+                            <ZoneAvailability>[];
+                        final free = <int, int>{
+                          for (final a in av) a.zoneId: a.freeSpots
+                        };
+                        String codeOf(int? id) {
+                          for (final z in zones) {
+                            if (z.id == id) return z.code;
+                          }
+                          return '';
+                        }
+
+                        return DropdownButtonFormField<int>(
+                          key: ValueKey(_zoneId),
+                          initialValue: _zoneId,
+                          decoration: const InputDecoration(
+                              labelText: 'Khu'),
+                          items: zones
+                              .map((z) {
+                                final full =
+                                    (free[z.id] ?? 1) <= 0;
+                                return DropdownMenuItem<int>(
+                                  value: z.id,
+                                  // MO-015 E3: khu đầy → disabled.
+                                  enabled: !full,
+                                  child: Text(
+                                      '${z.code} · ${z.name}'
+                                      '${full ? ' · ĐẦY' : ''}'),
+                                );
+                              })
+                              .toList(),
+                          onChanged: (v) async {
+                            setState(() => _zoneId = v);
+                            // MO-015 E3: toast 1 lần khi vừa đầy + cooldown.
+                            if (v != null &&
+                                (free[v] ?? 1) <= 0 &&
+                                context.mounted) {
+                              String? suggest;
+                              for (final a in av) {
+                                if (a.freeSpots > 0) {
+                                  suggest = a.zoneCode;
+                                  break;
+                                }
+                              }
+                              await maybeToastZoneFull(
+                                context,
+                                zoneCode: codeOf(v),
+                                suggestZone: suggest,
+                              );
+                            }
+                          },
+                        );
+                      },
                     );
                   },
                 ),

@@ -816,6 +816,58 @@ export interface ApiMap {
   'auth:qr-key': { input: void; output: IpcResult<QrKeyOutput> };
   'tickets:qr-payload': { input: { ticket_code: string }; output: IpcResult<QrPayloadOutput> };
   'tickets:verify-qr': { input: { qr_text: string }; output: IpcResult<QrVerifyOutput> };
+  // BE-021 (notifications.md DS-014 V1): local scheduler desktop (Windows Toast).
+  'notify:test': { input: NotifyTestInput; output: IpcResult<NotifyTestOutput> };
+}
+
+// ---- Thông báo desktop V1 (spec ./specs/notifications.md — BE-021) ----
+// Local scheduler trong Electron main (KHÔNG FCM desktop). Toast click →
+// renderer nghe event `notify:deep-link` (preload KHÔNG đụng scope này —
+// frontend tự `ipcRenderer.on`) rồi mở đúng tab + highlight row.
+// Payload local chung với mobile để P2 thay trigger bằng FCM không đổi UI.
+
+/** 4 sự kiện V1: E1 vé sắp hết · E2 giữ chỗ sắp tới giờ · E3 bãi đầy · E4 ca chưa chốt. */
+export type NotifyEvent = 'E1' | 'E2' | 'E3' | 'E4';
+
+/** Tab desktop đích của deep-link (frontend map sang route thật). */
+export type NotifyTab = 'passes' | 'reservations' | 'map' | 'attendance';
+
+/** Deep-link gửi kèm Toast click qua event `notify:deep-link`. */
+export interface NotifyDeepLink {
+  event: NotifyEvent;
+  tab: NotifyTab;
+  pass_code?: string; // E1: highlight row vé
+  code?: string; // E2: focus card mã R-…
+  zone_code?: string; // E3: preselect zone còn chỗ
+  attendance_id?: number; // E4: focus card ca + badge "Chốt bù"
+}
+
+/** Kênh event main → renderer khi user click Toast (renderer tự đăng ký). */
+export const NOTIFY_DEEP_LINK_CHANNEL = 'notify:deep-link';
+
+/** Cách 1 Toast được phát (báo cáo trong `notify:test`). */
+export type NotifyFireMode =
+  | 'toast' // hiện Toast bình thường
+  | 'silent' // E2 trong quiet-hours: hiện tray, không âm thanh (priority low)
+  | 'deferred' // E1/E4 rơi vào quiet-hours: hoãn tới 06:05, chưa bắn
+  | 'skipped-quiet'; // mở app trong giờ im lặng: chỉ badge in-app, không Toast
+
+export interface NotifyFireItem {
+  event: NotifyEvent;
+  title: string;
+  entity: string; // pass_code / R-code / zone_code / attendance id
+  mode: NotifyFireMode;
+}
+
+export interface NotifyTestInput {
+  /** Bắn 1 Toast mẫu của sự kiện (để QA click thử deep-link). Không gửi = dry-run. */
+  sample?: NotifyEvent;
+}
+
+export interface NotifyTestOutput {
+  quiet: boolean; // đang trong quiet-hours lúc test?
+  fired: NotifyFireItem[]; // Toast đã bắn (hoặc sẽ bắn ngay khi dry-run ngoài giờ im lặng)
+  deferred: NotifyFireItem[]; // bị hoãn tới 06:05 (E1/E4 trong quiet-hours)
 }
 
 export type IpcChannel = keyof ApiMap;

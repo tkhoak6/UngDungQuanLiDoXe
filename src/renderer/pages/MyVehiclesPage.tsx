@@ -6,6 +6,8 @@ import { callApi } from '../lib/api';
 import { mockApi } from '../lib/mockApi';
 import { formatDateTime, formatVND, normalizePlate } from '../lib/format';
 import { BuyPassDialog } from './BuyPassDialog';
+import { NotifyFallbackBanner, NotifyRationaleDialog } from '../components/NotifyBanner';
+import { shouldShowNotifyRationale } from '../lib/notify';
 import type { CustomerSessionRow, CustomerVehicle, MonthlyPass, ParkingZone } from '../types';
 
 type Status = 'loading' | 'error' | 'ready';
@@ -18,7 +20,7 @@ interface MyVehiclesPageProps {
   onGoMap: () => void;
 }
 
-export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Element {
+export function MyVehiclesPage({ phone, onGoMap, highlightPassCode = null }: MyVehiclesPageProps & { highlightPassCode?: string | null }): JSX.Element {
   const { logout } = useAuth();
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState('');
@@ -39,6 +41,8 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
   const [cancelTarget, setCancelTarget] = useState<MonthlyPass | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // FE-025 (spec §5.1): rationale sau đăng ký vé thành công đầu tiên (tối đa 2 lần).
+  const [rationale, setRationale] = useState(false);
   const toastSeq = useRef(1);
   const rowTrigger = useRef<HTMLElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
@@ -84,6 +88,13 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
   useEffect(() => {
     void load();
   }, [load]);
+
+  // FE-025: deep-link E1 (tab passes customer) — scroll tới alert vé sau khi render.
+  useEffect(() => {
+    if (!highlightPassCode) return;
+    const el = document.querySelector(`[data-pass-code="${highlightPassCode}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightPassCode, pending]);
 
   // Drawer a11y: Esc đóng + focus nút đóng khi mở + trả focus về row + khóa scroll nền.
   useEffect(() => {
@@ -190,11 +201,18 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
 
   return (
     <div>
+      {/* FE-025 (spec §5.2): banner fallback khi toast bị chặn/tắt (E1 vé sắp hết). */}
+      <NotifyFallbackBanner surface="passes" />
       {/* FE-014: vé đang chờ xác nhận — banner info + nút Hủy đăng ký. */}
       {pending.length > 0 && (
         <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {pending.map((p) => (
-            <Alert key={p.pass_code} tone="warning">
+            <div
+              key={p.pass_code}
+              data-pass-code={p.pass_code}
+              style={highlightPassCode === p.pass_code ? { outline: '2px solid var(--color-primary)', outlineOffset: 2, borderRadius: 8 } : undefined}
+            >
+            <Alert tone="warning">
               <span>
                 Đã gửi đăng ký <strong className="mono">{p.pass_code}</strong> — mang{' '}
                 <strong className="mono">{formatVND(p.price)}</strong> ra quầy để kích hoạt.
@@ -209,6 +227,7 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
                 Hủy đăng ký
               </button>
             </Alert>
+            </div>
           ))}
         </div>
       )}
@@ -387,6 +406,7 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
           onSuccess={(pass) => {
             setBuyTarget(null);
             pushToast('success', `Đã gửi đăng ký ${pass.pass_code} — mang ${formatVND(pass.price)} ra quầy để kích hoạt.`);
+            if (shouldShowNotifyRationale()) setRationale(true);
             void load();
           }}
         />
@@ -407,6 +427,17 @@ export function MyVehiclesPage({ phone, onGoMap }: MyVehiclesPageProps): JSX.Ele
       )}
 
       <Toasts items={toasts} />
+
+      {/* FE-025 (spec §5.1): rationale sau đăng ký vé thành công đầu tiên. */}
+      {rationale && (
+        <NotifyRationaleDialog
+          trigger="pass"
+          onDone={(granted) => {
+            setRationale(false);
+            if (granted) pushToast('success', 'Đã bật thông báo.');
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -13,6 +13,17 @@ import { checkpointWithRetry, dbFilePath, stampLong, stampShort, validateRestore
 import { AppError, getCurrentUser, hashPassword, loginOnlineFirst, logout, refreshCurrentUser, registerCustomerOnlineFirst, requireCustomer, requirePerm, requireRole, resolvePerms, toUserDTO } from './auth';
 import { pbGetStatus, PbNoFallbackError, pbTestConnection } from './pb-client';
 import { calculateFee, calculatePassPrice } from './fee-calculator';
+// BE-021 (DS-014 V1): scheduler Toast desktop — hooks đặt/chốt lịch, KHÔNG sửa IPC cũ.
+import {
+  E2_LEAD_MINUTES,
+  cancelReservationReminder,
+  cancelShiftReminder,
+  runNotificationCatchup,
+  scheduleReservationReminder,
+  scheduleShiftReminder,
+  setNotifyUserProvider,
+  suppressPassReminders,
+} from './notifications';
 import {
   ensureQrHmacKey,
   normalizePlateForQr,
@@ -51,6 +62,7 @@ import {
   type IpcChannel,
   type IpcResult,
   type MonthlyPass,
+  type NotifyTestInput,
   type ParkingSession,
   type ParkingSpot,
   type ParkingZone,
@@ -325,6 +337,8 @@ function register<K extends IpcChannel>(
 let restartRequired = false;
 
 export function registerIpcHandlers(db: AppDb): void {
+  // BE-021: scheduler Toast cần biết user hiện tại để lọc E1/E2 (mine-only customer).
+  setNotifyUserProvider(getCurrentUser);
   // ---- auth (BE-016 online-first: thử PB trước, rớt mạng/lỗi → fallback local) ----
   register(db, 'auth:login', 'none', async (_db, input) => ok(await loginOnlineFirst(_db, input.username, input.password)));
   register(db, 'auth:logout', 'none', () => {
@@ -568,7 +582,16 @@ export function registerIpcHandlers(db: AppDb): void {
       }
       return d.prepare(`SELECT * FROM parking_sessions WHERE id = ?`).get(r.lastInsertRowid) as ParkingSession;
     });
-    return ok(checkIn());
+    const session = checkIn();
+    // BE-021 (E2): check-in bằng mã = consume → hủy lịch nhắc mã đó.
+    if (held) {
+      try {
+        cancelReservationReminder((held as Reservation).code);
+      } catch {
+        // ignore
+      }
+    }
+    return ok(session);
   });
 
   // ---- sessions: fee preview (mandatory BEFORE charge — spec §d) ----
@@ -917,19 +940,24 @@ export function registerIpcHandlers(db: AppDb): void {
     const [y, m, day] = cont.split('-').map(Number);
     const start = new Date(Date.UTC(y, m - 1, day));
     if (cur.end_date >= today) start.setUTCDate(start.getUTCDate() + 1);
-    return ok(
-      sellPass(d, {
-        plate: vehicle.license_plate,
-        vehicle_type: vehicle.vehicle_type,
-        customer_name: cur.customer_name,
-        customer_phone: cur.customer_phone,
-        zone_id: cur.zone_id,
-        months: input.months,
-        start_date: start.toISOString().slice(0, 10),
-        payment_method: input.payment_method ?? 'cash',
-        actorId: me.id,
-      }),
-    );
+    const created = sellPass(d, {
+      plate: vehicle.license_plate,
+      vehicle_type: vehicle.vehicle_type,
+      customer_name: cur.customer_name,
+      customer_phone: cur.customer_phone,
+      zone_id: cur.zone_id,
+      months: input.months,
+      start_date: start.toISOString().slice(0, 10),
+      payment_method: input.payment_method ?? 'cash',
+      actorId: me.id,
+    });
+    // BE-021 (E1 §1.4): gia hạn xong → vé cũ hết vòng đời nhắc, không bắn D-3/D-0 cho mã cũ.
+    try {
+      suppressPassReminders(cur.pass_code);
+    } catch {
+      // ignore
+    }
+    return ok(created);
   });
 
   register(db, 'passes:cancel', 'none', (d, input) => {
@@ -1550,6 +1578,13 @@ export function registerIpcHandlers(db: AppDb): void {
     });
     const row = tx();
     const overnightNote = row.end_time > row.start_time ? '' : ' (qua đêm)';
+    // BE-021 (E2): đặt lịch nhắc start − 20p; đặt muộn (<20p) → bắn 30s sau giữ.
+    try {
+      const gapMin = (toMinutes(start) - toMinutes(nowTime) + 1440) % 1440;
+      scheduleReservationReminder(d, row.code, gapMin < E2_LEAD_MINUTES);
+    } catch {
+      // scheduler lỗi không được phá kết quả đặt chỗ
+    }
     return ok(row, `Đã giữ chỗ ${plate} ở khu ${zone.code} — mã ${row.code}, hiệu lực đến ${row.end_time}${overnightNote}.`);
   });
 
@@ -1597,7 +1632,14 @@ export function registerIpcHandlers(db: AppDb): void {
       }
       return d.prepare(`SELECT * FROM reservations WHERE id = ?`).get(r.id) as Reservation;
     });
-    return ok(tx(), `Đã hủy giữ chỗ ${code}.`);
+    const out = tx();
+    // BE-021 (E2): hủy lịch nhắc của mã vừa hủy (không bắn cho reservation đã cancelled).
+    try {
+      cancelReservationReminder(code);
+    } catch {
+      // ignore
+    }
+    return ok(out, `Đã hủy giữ chỗ ${code}.`);
   });
 
   // ---- payments (append-only: list only, no update/delete by design) ----
@@ -1934,6 +1976,12 @@ export function registerIpcHandlers(db: AppDb): void {
         )
         .run(userId, shift.id, workDate, nowStr, opening, status);
       const row = d.prepare(`SELECT * FROM attendance WHERE id = ?`).get(r.lastInsertRowid) as Attendance;
+      // BE-021 (E4): vào ca → đặt lịch nhắc end+30p (chốt ca hủy lịch).
+      try {
+        scheduleShiftReminder(d, row.id);
+      } catch {
+        // scheduler lỗi không được phá kết quả chấm công
+      }
       return ok(
         row,
         status === 'late'
@@ -1983,6 +2031,12 @@ export function registerIpcHandlers(db: AppDb): void {
       return { out, revenue, variance, shiftName: shift.name, workDate: row.work_date, opening: row.opening_cash };
     });
     const { out, revenue, variance, shiftName, workDate, opening } = tx();
+    // BE-021 (E4): chốt ca (kể cả chốt bù) → hủy lịch nhắc ca đó.
+    try {
+      cancelShiftReminder(out.id);
+    } catch {
+      // ignore
+    }
     const warn = variance !== null && variance !== 0
       ? ` — đối soát lệch ${variance > 0 ? '+' : '−'}${vnd(Math.abs(variance))} (thực ${closing !== null ? vnd(closing) : '—'} − đầu ca ${vnd(opening)} − thu trong ca ${vnd(revenue)}), admin đối soát sau.`
       : variance === 0
@@ -2233,6 +2287,20 @@ export function registerIpcHandlers(db: AppDb): void {
     }
     restartRequired = true;
     return ok({ backup_path: backupPath, restored_at: restoredAt, needRestart: true as const });
+  });
+
+  // ---- desktop notifications V1 (spec ./specs/notifications.md — BE-021) ----
+  // Local scheduler E1–E4 (Windows Toast qua Electron Notification, KHÔNG FCM).
+  // IPC mới duy nhất: dry-run quét thật + bắn Toast mẫu để QA click thử deep-link
+  // (event `notify:deep-link` renderer tự đăng ký — preload KHÔNG đụng).
+  register(db, 'notify:test', 'none', (d, input: NotifyTestInput) => {
+    const me = getCurrentUser();
+    if (!me) throw new AppError('Chưa đăng nhập');
+    const sample = input?.sample;
+    if (sample !== undefined && sample !== 'E1' && sample !== 'E2' && sample !== 'E3' && sample !== 'E4') {
+      throw new AppError('Sự kiện mẫu không hợp lệ (E1/E2/E3/E4)');
+    }
+    return ok(runNotificationCatchup(d, { sample }));
   });
 }
 

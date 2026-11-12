@@ -41,6 +41,8 @@ import { STAFF_DEFAULTS } from '../types';
 import type {
   AppConfigSetInput,
   BackupNowOutput,
+  NotifyDeepLink,
+  NotifyEvent,
   ParkingSettings,
   RestoreFromFileOutput,
   TxListInput,
@@ -48,6 +50,7 @@ import type {
 } from '../types';
 import { PERM_META } from './perms';
 import { todayLocal } from './format';
+import { dispatchNotifyDeepLink } from './notify';
 
 const FULL_PERMS: StaffPermissions = { ...STAFF_DEFAULTS };
 
@@ -1505,5 +1508,29 @@ export const mockApi: RendererApi = {
       needRestart: true,
     };
     return { ok: true, data: out };
+  },
+
+  // FE-025 mock `notify:test` (mirror BE-021): dry-run trả 4 item demo
+  // (E1 vé MT-2026-0001 D-3, E2 mã giữ chỗ demo, E3 khu A đầy, E4 ca treo);
+  // có `sample` → dispatch CustomEvent deep-link để bản web/vite QA
+  // điều hướng + highlight như click Toast thật trong Electron.
+  async testNotify(sample?: NotifyEvent) {
+    await delay(400);
+    const fired = [
+      { event: 'E1' as const, title: 'Vé tháng sắp hết hạn', entity: 'MT-2026-0001', mode: 'toast' as const },
+      { event: 'E2' as const, title: 'Sắp tới giờ giữ chỗ', entity: 'R-20261024-0001', mode: 'toast' as const },
+      { event: 'E3' as const, title: 'Khu A vừa đầy', entity: 'A', mode: 'toast' as const },
+      { event: 'E4' as const, title: 'Bạn chưa chốt ca Ca chiều', entity: '101', mode: 'toast' as const },
+    ];
+    if (sample) {
+      const link: NotifyDeepLink =
+        sample === 'E1' ? { event: 'E1', tab: 'passes', pass_code: 'MT-2026-0001' }
+        : sample === 'E2' ? { event: 'E2', tab: 'reservations', code: 'R-20261024-0001' }
+        : sample === 'E3' ? { event: 'E3', tab: 'map', zone_code: 'A' }
+        : { event: 'E4', tab: 'attendance', attendance_id: 101 };
+      dispatchNotifyDeepLink(link);
+      return { ok: true, data: { quiet: false, fired: fired.filter((f) => f.event === sample), deferred: [] } };
+    }
+    return { ok: true, data: { quiet: false, fired, deferred: [] } };
   },
 };

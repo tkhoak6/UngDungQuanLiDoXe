@@ -604,3 +604,39 @@ export interface RestoreFromFileOutput {
 export interface CustomerReserveCancelInput {
   code: string; // mã R-… của chính mình, chỉ khi 'pending'
 }
+
+// ---- Thông báo desktop V1 (spec ./specs/notifications.md, nối BE-021) ----
+// Mirrors src/shared/types.ts. Desktop Electron: local scheduler trong main,
+// Toast click → event `notify:deep-link` → renderer mở đúng tab + highlight.
+// V1 KHÔNG FCM desktop. Banner fallback trong app khi toast bị chặn/tắt.
+export type NotifyEvent = 'E1' | 'E2' | 'E3' | 'E4';
+
+export type NotifyTab = 'passes' | 'reservations' | 'map' | 'attendance';
+
+export interface NotifyDeepLink {
+  event: NotifyEvent;
+  tab: NotifyTab;
+  pass_code?: string; // E1: highlight row vé
+  code?: string; // E2: focus card mã R-…
+  zone_code?: string; // E3: preselect zone còn chỗ
+  attendance_id?: number; // E4: focus card ca + badge "Chốt bù"
+}
+
+export type NotifyFireMode = 'toast' | 'silent' | 'deferred' | 'skipped-quiet';
+
+export interface NotifyFireItem {
+  event: NotifyEvent;
+  title: string;
+  entity: string; // pass_code / R-code / zone_code / attendance id
+  mode: NotifyFireMode;
+}
+
+export interface NotifyTestInput {
+  sample?: NotifyEvent; // bắn 1 Toast mẫu để QA click thử deep-link; không gửi = dry-run
+}
+
+export interface NotifyTestOutput {
+  quiet: boolean; // đang trong quiet-hours lúc test?
+  fired: NotifyFireItem[]; // Toast đã bắn (hoặc sẽ bắn ngay khi dry-run ngoài giờ im lặng)
+  deferred: NotifyFireItem[]; // bị hoãn tới 06:05 (E1/E4 trong quiet-hours)
+}

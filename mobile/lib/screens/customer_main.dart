@@ -11,6 +11,7 @@ import '../core/retained_future.dart';
 import '../core/tokens.dart';
 import '../core/validators.dart';
 import '../models/entities.dart';
+import '../notifications/notifications.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
 import '../widgets/plate_field.dart';
@@ -23,9 +24,16 @@ import 'anpr_sheet.dart';
 /// Link "Chỉnh giờ chi tiết" mở form Từ/Đến tay (qua đêm được).
 /// KHÔNG ô nhập giờ ở mode nhanh, KHÔNG clamp/khóa theo giờ.
 class ReservationsScreen extends ConsumerStatefulWidget {
-  const ReservationsScreen({super.key, this.zoneId});
+  const ReservationsScreen(
+      {super.key, this.zoneId, this.focusCode, this.confirmCancel = false});
 
   final int? zoneId;
+
+  /// MO-015 E2 deep-link `/reservations?code=R-…`: highlight + mở sheet mã.
+  final String? focusCode;
+
+  /// MO-015 E2 action "Hủy giữ chỗ": mở confirm hủy (không hủy trực tiếp).
+  final bool confirmCancel;
 
   @override
   ConsumerState<ReservationsScreen> createState() =>
@@ -38,6 +46,9 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   int? _zoneId;
   bool _quick = true;
   int _duration = 120; // default 2h (như desktop FE-023)
+  // MO-015 E2: mã đang focus từ deep-link (highlight + sheet).
+  String? _focusedCode;
+  bool _focusHandled = false;
   final _plate = TextEditingController();
   bool _plateCustom = false;
   String? _prefilledFor;
@@ -59,6 +70,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
   void initState() {
     super.initState();
     _zoneId = widget.zoneId;
+    _focusedCode = widget.focusCode;
     final n = TimeOfDay.now();
     _from = n;
     final endMin = n.hour * 60 + n.minute + 120;
@@ -160,6 +172,18 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
       if (!mounted) return;
       _refreshLists();
       _showSuccess(row);
+      // MO-015 E2: hẹn nhắc trước 20p (exact alarm, silent nếu quiet).
+      try {
+        await NotificationScheduler.scheduleReservation(
+          row: row,
+          createdNow: DateTime.now(),
+        );
+      } catch (_) {
+        // Lên lịch thất bại → countdown in-app vẫn chạy (spec §2.1).
+      }
+      // MO-015: rationale xin quyền sau hành động liên quan đầu tiên.
+      if (!mounted) return;
+      await maybeShowRationale(context, ref);
     } on RepoException catch (e) {
       setState(() => _formErr = e.message);
     } finally {
@@ -194,6 +218,10 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // MO-015 §5.2: nhắc tự canh giờ khi thông báo tắt.
+          const NotifFallbackBanner(
+            message: PermissionDeniedCopy.fallbackReservation,
+          ),
           const Text('Giữ chỗ thành công', style: AppText.cardTitle),
           const SizedBox(height: AppGaps.s8),
           PlateText(row.code, size: 20),
@@ -260,6 +288,12 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
       await ref
           .read(customerRepoProvider)
           .cancelReservation(row.code, me.id);
+      // MO-015 E2: hủy lịch nhắc khi hủy giữ chỗ.
+      try {
+        await NotificationScheduler.cancelReservation(row.code);
+      } catch (_) {
+        // Bỏ qua.
+      }
       if (!mounted) return;
       _refreshLists();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -330,6 +364,34 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
           _pendingCount =
               rows.where((r) => r.status == 'pending').length;
           final quotaReached = _pendingCount >= 2;
+          // MO-015 E2 deep-link: mở sheet mã / confirm hủy 1 lần.
+          if (!_focusHandled &&
+              _focusedCode != null &&
+              _focusedCode!.isNotEmpty) {
+            _focusHandled = true;
+            final code = _focusedCode!;
+            final wantCancel = widget.confirmCancel;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              ReservationRow? match;
+              for (final r in rows) {
+                if (r.code == code) match = r;
+              }
+              if (match == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content: Text(
+                          'Không tìm thấy mã giữ chỗ $code.')),
+                );
+                return;
+              }
+              if (wantCancel) {
+                _confirmCancel(match);
+              } else {
+                _showSuccess(match);
+              }
+            });
+          }
           return ListView(
             padding: const EdgeInsets.all(AppGaps.s16),
             children: [
@@ -612,6 +674,7 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
                 ...rows.map((r) => _ReservationCard(
                       row: r,
                       now: _now,
+                      focused: r.code == _focusedCode,
                       onCancel: () => _confirmCancel(r),
                       onRefill: () => _refill(r),
                     )),
@@ -629,12 +692,16 @@ class _ReservationCard extends StatelessWidget {
     required this.now,
     required this.onCancel,
     required this.onRefill,
+    this.focused = false,
   });
 
   final ReservationRow row;
   final DateTime now;
   final VoidCallback onCancel;
   final VoidCallback onRefill;
+
+  /// MO-015: highlight khi mở từ deep-link E2.
+  final bool focused;
 
   @override
   Widget build(BuildContext context) {
@@ -645,7 +712,14 @@ class _ReservationCard extends StatelessWidget {
     final expHint = row.expiresAt.length >= 16
         ? row.expiresAt.substring(11, 16)
         : row.expiresAt;
-    return Card(
+    final card = Card(
+      shape: focused
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(
+                  color: AppColors.primary, width: 2),
+            )
+          : null,
       child: Padding(
         padding: const EdgeInsets.all(AppGaps.s12),
         child: Column(
@@ -733,6 +807,7 @@ class _ReservationCard extends StatelessWidget {
         ),
       ),
     );
+    return card;
   }
 
   Widget _statusBadge(String s) {

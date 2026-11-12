@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Alert, Badge, Button, EmptyState, RetryPanel, SkeletonRows } from '../components/ui';
 import type { AttendanceRow, AttendanceStatus, UserDTO } from '../types';
 import { elapsedHM, fmtHM, fmtSigned } from '../lib/attendance';
@@ -31,6 +31,8 @@ interface Props {
   onLogout: () => void;
   rows: AttendanceRow[]; // đã fetch (tối đa 200) — filter trạng thái + pager client-side
   total: number;
+  // FE-025: deep-link E4 — highlight row ca treo + scroll tới.
+  highlightId?: number | null;
 }
 
 // FE-019 S3 table "Ca của tôi" / admin "Bảng chấm công": toolbar chung
@@ -41,7 +43,7 @@ export function AttendanceTable(props: Props): JSX.Element {
   const {
     isAdmin, staffUsers, staffFilter, onStaffFilter, range, onRange,
     from, to, onFrom, onTo, listStatus, listError, forbidden,
-    onRetry, onLogout, rows, total,
+    onRetry, onLogout, rows, total, highlightId = null,
   } = props;
   const [statusFilter, setStatusFilter] = useState<'all' | AttendanceStatus>('all');
   const [page, setPage] = useState(1);
@@ -61,6 +63,13 @@ export function AttendanceTable(props: Props): JSX.Element {
     setSeenRows(rows);
     setPage(1);
   }
+
+  // FE-025: deep-link E4 — scroll tới row ca treo (sau khi rows render).
+  useEffect(() => {
+    if (highlightId === null) return;
+    const el = document.querySelector(`[data-att-id="${highlightId}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightId, pageRows]);
 
   return (
     <>
@@ -164,7 +173,11 @@ export function AttendanceTable(props: Props): JSX.Element {
                     {pageRows.map((r) => {
                       const diff = r.closing_cash === null ? null : r.closing_cash - r.opening_cash;
                       return (
-                        <tr key={r.id}>
+                        <tr
+                          key={r.id}
+                          data-att-id={r.id}
+                          className={highlightId === r.id ? 'row-flash' : undefined}
+                        >
                           <td className="mono">{formatDateShort(r.work_date)}</td>
                           {isAdmin && (
                             <td>

@@ -135,7 +135,6 @@ không đặt được, sai là báo đỏ. Khó dùng.
   giờ hành chính → đặt thẳng không note (validate server giữ nguyên chốt).
 - Chưa chạy: click-through GUI thật (Electron/vite) — cần designer QA tay.
 # FE-024 — Desktop đặt chỗ 24/24 (nối BE-019 + FE-023)
-
 ## Thay đổi (chỉ `src/renderer/*`, KHÔNG đụng main/DB/mobile)
 
 - `pages/MyReservationsPage.tsx`:
@@ -183,4 +182,62 @@ không đặt được, sai là báo đỏ. Khó dùng.
 - Chưa chạy: click-through GUI thật + runtime qua đêm cần DB đã
   migration-008 (BE-019 note: DB cũ CHECK cũ vẫn chặn INSERT qua đêm —
   chờ @database).
+
+---
+
+# FE-025 — Desktop notify UI (nối BE-021, spec notifications.md DS-014 V1)
+
+## Đấu dây renderer với scheduler có sẵn (chỉ `src/renderer/*`, KHÔNG main/DB/FCM)
+
+- Mới `src/renderer/lib/notify.ts` (~120 dòng): `subscribeNotifyDeepLink(cb)`
+  (thử bridge mở rộng `window.api.onNotifyDeepLink` + window CustomEvent cùng
+  kênh `notify:deep-link` — mock `testNotify({sample})` dispatch event này nên
+  QA click-through được ngay trên bản web/vite), `dispatchNotifyDeepLink`,
+  `notifyPermission/requestNotifyPermission` (chỉ gọi SAU rationale), rationale
+  §5.1 (`shouldShowNotifyRationale` — permission default + tối đa 2 lần),
+  banner §5.2 (`shouldShowFallbackBanner/dismiss` — nhớ 7 ngày), `FALLBACK_COPY`.
+- Mới `src/renderer/components/NotifyBanner.tsx`: `NotifyFallbackBanner`
+  (`role="status"` Warning strip + "Hướng dẫn bật" Settings→System→Notifications
+  + "Để sau 7 ngày") và `NotifyRationaleDialog` (bullets 3 dòng + [Để sau] /
+  [Bật thông báo], focus-trap/Esc qua `Dialog` có sẵn).
+- `types.ts`: mirror `NotifyEvent/Tab/DeepLink/FireMode/FireItem/TestInput/Output`
+  từ `src/shared/types.ts` (ApiMap `notify:test`). `lib/api.ts` +
+  `lib/mockApi.ts`: `testNotify(sample?)` — mock dry-run trả 4 item demo
+  (E1 MT-2026-0001, E2 R-code, E3 khu A, E4 att 101) + dispatch CustomEvent khi
+  có sample để App điều hướng + highlight như click Toast thật.
+- `App.tsx`: subscribe 1 lần → map tab (passes→Vé tháng, attendance→Chấm công,
+  map→Sơ đồ, reservations của staff → ở yên + toast mã để đối soát tại quầy;
+  customer luôn ở GuestPage nên GuestPage tự map tab con) + toast success xác
+  nhận điều hướng (tự tắt 5s). Truyền highlight props xuống các màn.
+- Highlight row: PassesPage (`highlightPassCode`, `tr.row-flash` có sẵn trong
+  index.css + scrollIntoView), AttendanceTable (`highlightId`, `tr.row-flash`
+  + auto về tab Chấm công), MyReservationsPage (`highlightCode`, outline
+  primary + scroll), MyVehiclesPage pending alert (`highlightPassCode`,
+  outline + scroll), GuestPage (E3 preselect zone theo `zone_code` sau khi
+  zones load; E4 không có màn customer → bỏ qua).
+- Banner fallback cắm đúng 3 màn spec: Vé tháng (surface passes, staff +
+  customer qua MyVehiclesPage), Đặt chỗ (surface reservations), Chấm công
+  (surface attendance). Rationale cắm đúng 3 trigger spec: giữ chỗ thành công
+  (MyReservationsPage), đăng ký vé (MyVehiclesPage buy success), vào ca
+  (AttendancePage check-in success).
+- `ManagementSafety.tsx`: card "Thông báo desktop (thử nghiệm)" — badge quyền
+  (`notifyPermissionLabel`), nút "Quét ngay (dry-run)" + 4 nút "Gửi thử E1–E4"
+  (gọi `notify:test`), list kết quả `fired/deferred` + mode VN + hint click
+  Toast → đúng tab.
+
+## Lưu ý cho @leader/BE (ngoài scope FE-025)
+
+- Preload hiện chỉ expose `api.invoke` (contextIsolation+sandbox) nên renderer
+  Electron thật CHƯA nhận được `webContents.send(notify:deep-link)` — cần BE
+  bổ sung ~3 dòng `onNotifyDeepLink` vào `src/preload/index.ts` (subscribe của
+  FE đã thử bridge này trước, tương thích xuôi). Bản web/vite + dry-run đã QA
+  được qua CustomEvent fallback.
+
+## Verification
+
+- `npx tsc --noEmit` → **pass** (EXIT:0). Không `console.log`.
+- `npm run build:renderer` (vite) → **built in 12.53s**, không restart app.
+- Chưa chạy: click Toast thật trong Electron (cần preload `on` + DB có data
+  mẫu E1–E4) — chờ designer QA tay.
+
 

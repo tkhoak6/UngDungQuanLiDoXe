@@ -646,3 +646,41 @@ export interface QrVerifyOutput {
 // sessions:check-out CheckInInput thêm `qr_payload?` optional (verify → resolve
 // ticket_code → chạy transaction cũ; lệch với ticket_code tay → lỗi)
 ```
+
+---
+
+## 18. Thông báo desktop V1 (spec `./specs/notifications.md`, BE-021 — Electron main, KHÔNG FCM)
+
+```ts
+// Local scheduler trong main (rebuild timer từ SQLite mỗi launch, không lưu lịch vào DB).
+// Toast click → focus window + gửi event `notify:deep-link` (preload KHÔNG đụng —
+// frontend tự `ipcRenderer.on('notify:deep-link', (_, link: NotifyDeepLink) => ...)`).
+export type NotifyEvent = 'E1' | 'E2' | 'E3' | 'E4';
+export type NotifyTab = 'passes' | 'reservations' | 'map' | 'attendance';
+export interface NotifyDeepLink {
+  event: NotifyEvent;
+  tab: NotifyTab;
+  pass_code?: string; // E1: highlight row vé (tab Vé tháng)
+  code?: string; // E2: focus card mã R-… (tab Đặt chỗ)
+  zone_code?: string; // E3: preselect zone còn chỗ (Sơ đồ)
+  attendance_id?: number; // E4: focus card ca + badge "Chốt bù" (Chấm công)
+}
+export const NOTIFY_DEEP_LINK_CHANNEL = 'notify:deep-link';
+export type NotifyFireMode = 'toast' | 'silent' | 'deferred' | 'skipped-quiet';
+export interface NotifyFireItem { event: NotifyEvent; title: string; entity: string; mode: NotifyFireMode }
+export interface NotifyTestInput { sample?: NotifyEvent } // bắn Toast mẫu để QA click thử
+export interface NotifyTestOutput { quiet: boolean; fired: NotifyFireItem[]; deferred: NotifyFireItem[] }
+// notify:test {sample?} → {NotifyTestOutput} (guard none + yêu cầu login)
+```
+
+| Sự kiện | Điều kiện | Copy VN | Deep-link | Chống spam |
+|---|---|---|---|---|
+| E1 vé sắp hết | `active`, `days_left == 3` (mọi giờ) / `== 0` (từ 07:00), đúng vé của customer đang login | D-3 Warning / D-0 Danger (§1.2, giá = `pass.price` vi-VN ₫) | tab Vé tháng + `pass_code` (≥2 vé → 1 summary) | tối đa 2/vé (state `notify-state.json` cạnh DB); gia hạn → `suppressPassReminders` hủy mã cũ |
+| E2 giữ chỗ | `pending`, `start − 20p` (đặt muộn → 30s sau giữ); verify chính chủ lúc bắn | `Sắp tới giờ giữ chỗ` + 2 mốc giờ (§2.2) | tab Đặt chỗ + `code` | 1/reservation; quá hạn không push thêm; quiet → **silent bypass** |
+| E3 bãi đầy | `v_zone_availability.free_spots == 0` (poll 60s, toast quầy staff) | `Khu {code} vừa đầy — chuyển sang khu {gợi ý}` | Sơ đồ + `zone_code` gợi ý | cooldown 15p/zone; hồi chỗ → tự gỡ (không push "đã có chỗ") |
+| E4 ca chưa chốt | `check_out_at IS NULL`, `now ≥ end + 30p` (ca đêm end 06:00 → 06:30 bình thường) | `Bạn chưa chốt ca {sáng/chiều/đêm}` (§4.2) | Chấm công + `attendance_id` | 1/ca; kéo qua 22:00 → hoãn 06:05 |
+
+- Quiet-hours 22:00–06:00: E1 hoãn 06:05, E2 silent bypass, E3 n/a (in-app), E4 ca đêm cho phép.
+- Check bù lúc mở app: rebuild timer E2/E4 từ SQLite + bắn bù 1 lần (E2 quá fire-time nhưng còn hạn → bắn ngay).
+- Renderer TODO: đăng ký `notify:deep-link`, mở đúng tab + highlight row; banner fallback khi user tắt thông báo OS (§5.2); xin quyền theo rationale §5.1 (desktop: `Settings → System → Notifications`).
+- IPC cũ KHÔNG đổi: hooks schedule/cancel nằm trong `customer:reserve(-cancel)`, `sessions:check-in` (consume mã), `attendance:check-in/out`, `passes:renew` — mọi lỗi scheduler đều try/catch, không phá kết quả nghiệp vụ.

@@ -34,6 +34,8 @@ import type {
   DashboardSummary,
   FeePreview,
   MonthlyPass,
+  NotifyEvent,
+  NotifyTestOutput,
   ParkingSession,
   ParkingSettings,
   ParkingZone,
@@ -181,6 +183,9 @@ export interface RendererApi {
   // main khi thiếu source_path (KHÔNG gửi binary từ renderer) → needRestart.
   backupNow(input?: BackupNowInput): Promise<ApiResult<BackupNowOutput>>;
   restoreFromFile(input?: RestoreFromFileInput): Promise<ApiResult<RestoreFromFileOutput>>;
+  // FE-025 (nối BE-021 `notify:test`): dry-run quét thật / bắn Toast mẫu để
+  // QA click thử deep-link. Guard none + yêu cầu login (backend).
+  testNotify(sample?: NotifyEvent): Promise<ApiResult<NotifyTestOutput>>;
 }
 
 /** Minimal structural view of the preload bridge (assignable from ParkingApi). */
@@ -656,6 +661,12 @@ const backendApi: RendererApi = {
 
   async restoreFromFile(input) {
     const res = await (getBridge() as InvokeBridge).invoke('restore:from-file', input ?? {});
+    return toResult(res);
+  },
+
+  // FE-025 (nối BE-021): dry-run không toast / sample bắn Toast mẫu thật.
+  async testNotify(sample) {
+    const res = await (getBridge() as InvokeBridge).invoke('notify:test', sample ? { sample } : {});
     return toResult(res);
   },
 

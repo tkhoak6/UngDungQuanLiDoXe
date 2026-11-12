@@ -6,6 +6,7 @@ import { allPassPlates, lookupPassPlate } from '../lib/api';
 import { mockApi, mockPassPlates } from '../lib/mockApi';
 import { formatDateShort, formatVND, isValidVNPhone, todayLocal } from '../lib/format';
 import type { MonthlyPass, ParkingZone, PassStatus, PaymentMethod, VehicleType } from '../types';
+import { NotifyFallbackBanner } from '../components/NotifyBanner';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -50,7 +51,7 @@ function renewStart(expiry: string): string {
 
 let toastSeq = 200;
 
-export function PassesPage(): JSX.Element {
+export function PassesPage({ highlightPassCode = null }: { highlightPassCode?: string | null } = {}): JSX.Element {
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState('');
   const [passes, setPasses] = useState<MonthlyPass[]>([]);
@@ -147,6 +148,14 @@ export function PassesPage(): JSX.Element {
   }, [passes, query, expiringOnly, statusFilter, plates]);
 
   const pendingCount = useMemo(() => passes.filter((p) => p.status === 'pending').length, [passes]);
+
+  // FE-025: deep-link E1 — scroll tới row vé sau khi rows render (filter có thể
+  // ẩn vé; row-flash chỉ áp khi row hiển thị — user bỏ filter để thấy).
+  useEffect(() => {
+    if (!highlightPassCode) return;
+    const el = document.querySelector(`[data-pass-code="${highlightPassCode}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightPassCode, rows]);
 
   const total = months === 12 ? Math.round(BASE_MONTHLY * months * 0.9) : BASE_MONTHLY * months;
 
@@ -264,6 +273,8 @@ export function PassesPage(): JSX.Element {
 
   return (
     <div>
+      {/* FE-025 (spec §5.2): banner fallback khi toast bị chặn/tắt (E1 vé sắp hết). */}
+      <NotifyFallbackBanner surface="passes" />
       <div className="toolbar" role="search">
         <input id="global-search" className="input search-input" aria-label="Tìm vé tháng" placeholder="Tìm biển số / tên / mã vé…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <select
@@ -314,9 +325,13 @@ export function PassesPage(): JSX.Element {
               {rows.map((p) => {
                 const d = daysUntil(p.end_date);
                 const tone = passTone(p, d);
+                // FE-025: highlight row từ deep-link E1 (scroll tới + pulse 1 lần).
+                const flashed = highlightPassCode !== null && p.pass_code === highlightPassCode;
                 return (
                   <tr
                     key={p.id}
+                    data-pass-code={p.pass_code}
+                    className={flashed ? 'row-flash' : undefined}
                     onClick={() => setDetail(p)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {

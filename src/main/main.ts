@@ -8,6 +8,7 @@ import { defaultDbPath, openDatabase } from './db';
 import type { AppDb } from './db';
 import { registerIpcHandlers } from './ipc-handlers';
 import { startDailyBackupJob } from './backup-restore';
+import { startNotificationScheduler, stopNotificationScheduler } from './notifications';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -92,6 +93,12 @@ void app.whenReady().then(() => {
     } catch {
       // ignore — backup tay qua backup:now vẫn dùng được
     }
+    // BE-021 (DS-014 V1): scheduler thông báo desktop (E1–E4) + check bù lúc mở app.
+    try {
+      startNotificationScheduler(db, () => mainWindow);
+    } catch {
+      // ignore — app vẫn chạy không Toast, renderer tự render banner in-app
+    }
   } catch (err) {
     // Never crash on startup: show the window with the error (DB missing binding, etc).
     startupError =
@@ -108,4 +115,12 @@ void app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  try {
+    stopNotificationScheduler();
+  } catch {
+    // ignore
+  }
 });

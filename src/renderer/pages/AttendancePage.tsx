@@ -10,6 +10,8 @@ import type { AttendanceRow, AttendanceTodayOutput, UserDTO } from '../types';
 import { AttendanceShifts } from './AttendanceShifts';
 import { AttendanceTable, type AttendanceRange } from './AttendanceTable';
 import { CheckInDialog, CheckOutDialog } from './AttendanceDialogs';
+import { NotifyFallbackBanner, NotifyRationaleDialog } from '../components/NotifyBanner';
+import { shouldShowNotifyRationale } from '../lib/notify';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -19,7 +21,7 @@ let toastSeq = 600;
 // (CalendarClock, staff+admin), thẻ ca hiện tại + banner "chốt bù" + table
 // 7 ngày; admin thêm staff-filter + tab Định nghĩa ca. KHÔNG gửi staff_id
 // ở check-in/out — backend ép me.id. Warning đối soát hiện, không chặn.
-export function AttendancePage(): JSX.Element {
+export function AttendancePage({ highlightAttendanceId = null }: { highlightAttendanceId?: number | null } = {}): JSX.Element {
   const { role, userId, logout } = useAuth();
   const isAdmin = role === 'admin';
   const [tab, setTab] = useState<'mine' | 'shifts'>('mine');
@@ -46,6 +48,8 @@ export function AttendancePage(): JSX.Element {
   const [saving, setSaving] = useState(false);
   const [dialogError, setDialogError] = useState('');
   const [result, setResult] = useState<{ revenue: number; variance: number | null } | null>(null);
+  // FE-025 (spec §5.1): rationale sau vào ca thành công đầu tiên (tối đa 2 lần).
+  const [rationale, setRationale] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [, setTick] = useState(0);
 
@@ -130,6 +134,17 @@ export function AttendancePage(): JSX.Element {
 
   useEffect(() => { void loadList(); }, [loadList]);
 
+  // FE-025: deep-link E4 — về tab Chấm công + scroll tới card/row ca treo.
+  useEffect(() => {
+    if (highlightAttendanceId === null) return;
+    setTab('mine');
+  }, [highlightAttendanceId]);
+  useEffect(() => {
+    if (highlightAttendanceId === null) return;
+    const el = document.querySelector(`[data-att-id="${highlightAttendanceId}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightAttendanceId, today, rows]);
+
   // Prefill két bàn giao: closing ca gần nhất đã chốt của chính mình.
   const lastClosing = useMemo(() => {
     const mine = rows.filter((r) => r.user_id === userId && r.closing_cash !== null);
@@ -177,6 +192,8 @@ export function AttendancePage(): JSX.Element {
     }
     setDialog(null);
     pushToast('success', `Đã vào ca — chúc ca trực suôn sẻ.${res.data.status === 'late' ? ' (ghi nhận trễ giờ)' : ''}`);
+    // FE-025: trigger xin quyền E4 — sau vào ca lần đầu, trước system prompt.
+    if (shouldShowNotifyRationale()) setRationale(true);
     void loadToday();
     void loadList();
   }
@@ -217,6 +234,8 @@ export function AttendancePage(): JSX.Element {
 
   return (
     <div>
+      {/* FE-025 (spec §5.2): banner fallback khi toast bị chặn/tắt (E4 ca chưa chốt). */}
+      <NotifyFallbackBanner surface="attendance" />
       {isAdmin && (
         <div
           className="tabs"
@@ -254,13 +273,18 @@ export function AttendancePage(): JSX.Element {
       {!(isAdmin && tab === 'shifts') && (
       <>
       {pending !== null && (
-        <div style={{ marginBottom: 12 }}>
+        <div
+          style={{ marginBottom: 12 }}
+          data-att-id={pending.id}
+        >
+          <div style={highlightAttendanceId === pending.id ? { outline: '2px solid var(--color-primary)', outlineOffset: 2, borderRadius: 8 } : undefined}>
           <Alert tone="warning">
             Bạn chưa chốt {pendingShiftName} ngày {formatDateShort(pending.work_date)} — bấm “Chốt bù” để chốt ca treo này.
             <span style={{ display: 'inline-block', marginLeft: 12 }}>
               <Button variant="neutral" onClick={openCheckOut}>Chốt bù</Button>
             </span>
           </Alert>
+          </div>
         </div>
       )}
 
@@ -356,6 +380,7 @@ export function AttendancePage(): JSX.Element {
         onLogout={logout}
         rows={rows}
         total={total}
+        highlightId={highlightAttendanceId}
       />
       </>
       )}
@@ -394,6 +419,17 @@ export function AttendancePage(): JSX.Element {
         />
       )}
       <Toasts items={toasts} />
+
+      {/* FE-025 (spec §5.1): rationale sau vào ca thành công đầu tiên. */}
+      {rationale && (
+        <NotifyRationaleDialog
+          trigger="shift"
+          onDone={(granted) => {
+            setRationale(false);
+            if (granted) pushToast('success', 'Đã bật thông báo.');
+          }}
+        />
+      )}
     </div>
   );
 }
