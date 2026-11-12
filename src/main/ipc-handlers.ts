@@ -10,7 +10,16 @@ import type { AppDb } from './db';
 import { sweepExpiredReservations } from './db';
 import { loadParkingSettings, saveParkingSettings, type ConfigPatch } from './app-config';
 import { checkpointWithRetry, dbFilePath, stampLong, stampShort, validateRestoreFile } from './backup-restore';
-import { AppError, getCurrentUser, hashPassword, loginOnlineFirst, logout, refreshCurrentUser, registerCustomerOnlineFirst, requireCustomer, requirePerm, requireRole, resolvePerms, toUserDTO } from './auth';
+import { AppError, establishSessionFromUserId, getCurrentUser, hashPassword, loginOnlineFirst, logout, refreshCurrentUser, registerCustomerOnlineFirst, requireCustomer, requirePerm, requireRole, resolvePerms, toUserDTO } from './auth';
+import {
+  consumeRememberToken,
+  isResumeBlocked,
+  issueRememberToken,
+  noteResumeFailure,
+  resetResumeFailures,
+  revokeRememberToken,
+  RESUME_FAIL_DELAY_MS,
+} from './session-store';
 import { pbGetStatus, PbNoFallbackError, pbTestConnection } from './pb-client';
 import { calculateFee, calculatePassPrice } from './fee-calculator';
 // BE-021 (DS-014 V1): scheduler Toast desktop — hooks đặt/chốt lịch, KHÔNG sửa IPC cũ.
@@ -102,6 +111,11 @@ type Handler<K extends IpcChannel> = (
 
 function sqliteNow(db: AppDb): string {
   return (db.prepare(`SELECT datetime('now') AS now`).get() as { now: string }).now;
+}
+
+/** Delay chống brute-force (BE-023 auth:resume sai token). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function toUtcInput(d: Date): string {
@@ -340,8 +354,47 @@ export function registerIpcHandlers(db: AppDb): void {
   // BE-021: scheduler Toast cần biết user hiện tại để lọc E1/E2 (mine-only customer).
   setNotifyUserProvider(getCurrentUser);
   // ---- auth (BE-016 online-first: thử PB trước, rớt mạng/lỗi → fallback local) ----
-  register(db, 'auth:login', 'none', async (_db, input) => ok(await loginOnlineFirst(_db, input.username, input.password)));
-  register(db, 'auth:logout', 'none', () => {
+  // BE-023: login thêm `remember?` (không đổi luồng cũ) — true → cấp token
+  // remember-me (raw trả 1 lần duy nhất trong `remember_token`).
+  register(db, 'auth:login', 'none', async (_db, input) => {
+    const user = await loginOnlineFirst(_db, input.username, input.password);
+    if (!input.remember) return ok(user);
+    const { token } = issueRememberToken(_db, user.id);
+    return ok(
+      { ...user, remember_token: token },
+      'Đã ghi nhớ đăng nhập trên máy này (30 ngày).',
+    );
+  });
+  // BE-023: resume phiên bền vững (public — rate-limit nhẹ trong handler).
+  // Token đúng + còn hạn → dựng session như login + XOAY token mới
+  // (thu hồi cũ ngay = single-use). Sai/hết hạn → message chung.
+  register(db, 'auth:resume', 'none', async (d, input) => {
+    if (isResumeBlocked()) {
+      return fail('Thử quá nhiều lần — vui lòng thử lại sau ít phút');
+    }
+    const token = (input?.token ?? '').trim();
+    const found = token ? consumeRememberToken(d, token) : { ok: false as const };
+    if (!found.ok) {
+      noteResumeFailure();
+      await sleep(RESUME_FAIL_DELAY_MS);
+      return fail('Phiên đăng nhập không hợp lệ hoặc đã hết hạn — vui lòng đăng nhập lại');
+    }
+    // establishSessionFromUserId đọc fresh + check khóa/guest (AppError → fail).
+    const user = establishSessionFromUserId(d, found.user_id);
+    resetResumeFailures();
+    const next = issueRememberToken(d, user.id);
+    return ok({ ...user, remember_token: next.token });
+  });
+  register(db, 'auth:logout', 'none', (_db, input) => {
+    // BE-023: thu hồi token remember-me hiện tại nếu client gửi kèm.
+    const tok = (input as { token?: string } | undefined)?.token;
+    if (typeof tok === 'string' && tok.trim()) {
+      try {
+        revokeRememberToken(_db, tok.trim());
+      } catch {
+        // ignore — logout memory luôn xong
+      }
+    }
     logout();
     return ok(null);
   });

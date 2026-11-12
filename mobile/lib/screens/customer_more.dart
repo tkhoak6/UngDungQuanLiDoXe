@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/format.dart';
 import '../core/retained_future.dart';
@@ -8,6 +9,7 @@ import '../models/entities.dart';
 import '../notifications/notifications.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/plate_field.dart';
 import '../widgets/qr_views.dart';
 import '../widgets/ui.dart';
@@ -102,7 +104,20 @@ class _PassesScreenState extends ConsumerState<PassesScreen> {
     final zonesRepo = ref.watch(parkingRepoProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Vé', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Vé', style: AppText.appBar),
+        // MO-018: đăng xuất ngay từ màn chính (thu hồi remember token).
+        actions: [
+          IconButton(
+            tooltip: 'Đăng xuất',
+            onPressed: () {
+              signOut(ref);
+              context.go('/map');
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
       body: FutureBuilder<List<PassRow>>(
         // MO-013: future giữ qua rebuild — setState (đổi khu/gói/retry)
         // không tạo future mới, ô biển số không bị remount/mất focus.

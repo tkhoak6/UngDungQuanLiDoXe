@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/tokens.dart';
 import '../data/pb_client.dart';
 import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 /// Cài đặt máy chủ PocketBase + trạng thái kết nối (MO-003).
@@ -90,6 +92,9 @@ class _SettingsFormState extends ConsumerState<_SettingsForm> {
     try {
       await widget.pb.setUrl(_url.text);
       // Phiên cũ đã bị xóa khi đổi URL (chống rò token sang server mới).
+      // MO-018: thu hồi luôn remember của máy — đổi máy chủ phải login
+      // lại, lần mở sau không tự resume phiên cũ.
+      await ref.read(hybridAuthRepoProvider).clearRemembered();
       ref.read(sessionProvider.notifier).state = null;
       ref.read(authSourceProvider.notifier).state = null;
       if (mounted) {
@@ -214,6 +219,18 @@ class _SettingsFormState extends ConsumerState<_SettingsForm> {
                   Text(
                     '${session.fullName} · ${session.phone ?? session.username}',
                     style: AppText.body,
+                  ),
+                  const SizedBox(height: AppGaps.s8),
+                  SizedBox(
+                    height: 48,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        signOut(ref);
+                        context.go('/map');
+                      },
+                      icon: const Icon(Icons.logout),
+                      label: const Text('Đăng xuất'),
+                    ),
                   ),
                 ],
                 if (widget.pb.hasSession &&

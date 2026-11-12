@@ -53,7 +53,8 @@ class AppDb {
     final created = await openDatabase(
       p.join(dir, 'parking_mobile.db'),
       // v3 (MO-009): thêm `qr_text` cho vé QR V1a.
-      version: 3,
+      // v4 (MO-018): thêm `remember_tokens` (hash-only, mirror BE-023).
+      version: 4,
       onCreate: _create,
       onUpgrade: _upgrade,
     );
@@ -218,6 +219,16 @@ CREATE TABLE attendance (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (user_id, shift_id, work_date)
 )''');
+    // MO-018: remember-me hash-only (mirror BE-023 sessions.json).
+    batch.execute('''
+CREATE TABLE remember_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)''');
+    batch.execute('''
+CREATE INDEX idx_remember_user ON remember_tokens(user_id)''');
     await batch.commit(noResult: true);
     await _seed(db);
   }
@@ -226,6 +237,7 @@ CREATE TABLE attendance (
   /// DB đã tạo từ trước (kể cả IndexedDB trên web). Không đụng row user
   /// đã có (giữ password_hash hiện tại nếu username trùng).
   /// v2 → v3 (MO-009): thêm `qr_text` cho vé QR V1a (idempotent).
+  /// v3 → v4 (MO-018): tạo `remember_tokens` (hash-only, mirror BE-023).
   Future<void> _upgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await _ensureDemoStaff(db);
@@ -237,6 +249,18 @@ CREATE TABLE attendance (
       if (!hasQr) {
         await db.execute('ALTER TABLE parking_sessions ADD COLUMN qr_text TEXT');
       }
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+CREATE TABLE IF NOT EXISTS remember_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)''');
+      await db.execute('''
+CREATE INDEX IF NOT EXISTS idx_remember_user
+ON remember_tokens(user_id)''');
     }
   }
 

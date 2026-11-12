@@ -9,6 +9,7 @@ import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../notifications/notifications.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 /// Sơ đồ chỗ trống — guest + customer dùng chung.
@@ -77,6 +78,16 @@ class _MapScreenState extends ConsumerState<MapScreen>
                   style: AppText.mono(12)),
             ),
           ),
+          // MO-018: đăng xuất ngay từ màn chính (thu hồi remember token).
+          if (session != null)
+            IconButton(
+              tooltip: 'Đăng xuất',
+              onPressed: () {
+                signOut(ref);
+                context.go('/map');
+              },
+              icon: const Icon(Icons.logout),
+            ),
         ],
       ),
       body: FutureBuilder<List<ParkingZone>>(

@@ -418,8 +418,35 @@ function mockAttendanceRow(a: Attendance): {
   };
 }
 
+// FE-026 mock remember-token store (mirror BE-023 single-use + xoay vòng):
+// localStorage cùng key thật để browser-dev reload vẫn resume được.
+const MOCK_REMEMBER_LS = 'parking:remember-token-v1';
+
+function mockIssueToken(userId: number): string {
+  const token = `mock-remember-${userId}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  try {
+    localStorage.setItem(MOCK_REMEMBER_LS, JSON.stringify({ token, userId }));
+  } catch {
+    // storage blocked — non-fatal
+  }
+  return token;
+}
+
+function mockConsumeToken(token: string): number | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MOCK_REMEMBER_LS) ?? 'null') as { token: string; userId: number } | null;
+    if (!raw || raw.token !== token || typeof raw.userId !== 'number') return null;
+    return raw.userId;
+  } catch {
+    return null;
+  }
+}
+
 export const mockApi: RendererApi = {
-  async login(username: string, password: string): Promise<ApiResult<AuthUser>> {
+  // FE-026 mock remember-me (mirror BE-023): remember=true → cấp token demo
+  // (lưu localStorage cùng key thật để browser-dev resume được qua reload);
+  // resume xoay token mới; logout thu hồi. Token sai → fail như backend.
+  async login(username: string, password: string, remember = false): Promise<ApiResult<AuthUser & { rememberToken?: string }>> {
     await delay(600);
     if (username.trim().length < 3 || password.length === 0) {
       return { ok: false, error: 'Sai tài khoản hoặc mật khẩu' };
@@ -430,21 +457,46 @@ export const mockApi: RendererApi = {
     if (customer) {
       if (password !== customer.password) return { ok: false, error: 'Sai tài khoản hoặc mật khẩu' };
       currentCustomerPhone = customer.phone;
-      return { ok: true, data: { userId: customer.userId, fullName: customer.fullName, role: 'customer', perms: { ...FULL_PERMS } } };
+      const data: AuthUser & { rememberToken?: string } = { userId: customer.userId, fullName: customer.fullName, role: 'customer', perms: { ...FULL_PERMS } };
+      if (remember) data.rememberToken = mockIssueToken(customer.userId);
+      return { ok: true, data };
     }
     // Seed accounts: admin/123456 → admin, staff/123456 → staff (matches seed.sql).
     // FE-019: track "me" cho attendance mocks mine-only (mirror BE-013 ép me.id).
     if (username === 'admin') {
       if (password !== '123456') return { ok: false, error: 'Sai tài khoản hoặc mật khẩu' };
       currentStaffId = 1;
-      return { ok: true, data: { userId: 1, fullName: 'Quản trị viên', role: 'admin', perms: { ...FULL_PERMS } } };
+      const data: AuthUser & { rememberToken?: string } = { userId: 1, fullName: 'Quản trị viên', role: 'admin', perms: { ...FULL_PERMS } };
+      if (remember) data.rememberToken = mockIssueToken(1);
+      return { ok: true, data };
     }
     if (password !== '123456') return { ok: false, error: 'Sai tài khoản hoặc mật khẩu' };
     currentStaffId = 2;
     // FE-020 S4: trả perms đã resolve của staff (mock login theo id 2 — sau khi
     // admin sửa quyền qua updateUser mock, login lại thấy flags mới).
     const staff = users.find((u) => u.id === 2);
-    return { ok: true, data: { userId: 2, fullName: 'Nhân viên ca sáng', role: 'staff', perms: { ...(staff?.perms ?? FULL_PERMS) } } };
+    const staffData: AuthUser & { rememberToken?: string } = { userId: 2, fullName: 'Nhân viên ca sáng', role: 'staff', perms: { ...(staff?.perms ?? FULL_PERMS) } };
+    if (remember) staffData.rememberToken = mockIssueToken(2);
+    return { ok: true, data: staffData };
+  },
+
+  async resume(token: string): Promise<ApiResult<AuthUser & { rememberToken: string }>> {
+    await delay(300);
+    const userId = mockConsumeToken(token);
+    if (userId === null) return { ok: false, error: 'Phiên đăng nhập đã hết hạn' };
+    const rotated = mockIssueToken(userId);
+    if (userId === 1) {
+      currentStaffId = 1;
+      return { ok: true, data: { userId: 1, fullName: 'Quản trị viên', role: 'admin', perms: { ...FULL_PERMS }, rememberToken: rotated } };
+    }
+    const customer = customerAccounts.find((c) => c.userId === userId);
+    if (customer) {
+      currentCustomerPhone = customer.phone;
+      return { ok: true, data: { userId: customer.userId, fullName: customer.fullName, role: 'customer', perms: { ...FULL_PERMS }, rememberToken: rotated } };
+    }
+    currentStaffId = userId;
+    const staff = users.find((u) => u.id === userId);
+    return { ok: true, data: { userId, fullName: staff?.full_name ?? 'Nhân viên ca sáng', role: 'staff', perms: { ...(staff?.perms ?? FULL_PERMS) }, rememberToken: rotated } };
   },
 
   // FE-012 mock `auth:register`: duplicate phone → 409-style message
@@ -696,8 +748,17 @@ export const mockApi: RendererApi = {
     };
   },
 
-  async logout(): Promise<ApiResult<void>> {
+  async logout(token?: string): Promise<ApiResult<void>> {
     await delay(150);
+    // FE-026: thu hồi token remember (mock single-slot — token nào cũng clear).
+    if (token) {
+      try {
+        const raw = JSON.parse(localStorage.getItem(MOCK_REMEMBER_LS) ?? 'null') as { token: string } | null;
+        if (raw && raw.token === token) localStorage.removeItem(MOCK_REMEMBER_LS);
+      } catch {
+        // non-fatal
+      }
+    }
     return { ok: true, data: undefined };
   },
 

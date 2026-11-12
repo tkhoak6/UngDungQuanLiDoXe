@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type JSX } from 'react';
 import { Eye, EyeOff, TriangleAlert } from 'lucide-react';
-import { useAuth } from '../store/auth';
+import { useAuth, consumeLogoutFlash } from '../store/auth';
 import { Button, Alert } from '../components/ui';
 import { callApi } from '../lib/api';
 import { mockApi } from '../lib/mockApi';
@@ -50,6 +50,16 @@ export function LoginPage(): JSX.Element {
   const [loginErrors, setLoginErrors] = useState<{ identifier?: string; password?: string }>({});
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginServer, setLoginServer] = useState<ServerKind | null>(null);
+  // FE-026 (nối BE-023): "Ghi nhớ đăng nhập" — QUYẾT ĐỊNH default OFF (an toàn:
+  // máy quầy dùng chung, tránh phiên cũ tự vào app khi đổi ca).
+  const [remember, setRemember] = useState(false);
+  // FE-026: flash 1 lần "Đã đăng xuất." sau logout (KHÔNG confirm lúc bấm —
+  // quyết định 1 click + toast xác nhận, đăng nhập lại rẻ).
+  const [loggedOut, setLoggedOut] = useState(false);
+
+  useEffect(() => {
+    if (consumeLogoutFlash()) setLoggedOut(true);
+  }, []);
 
   // ---- register state ----
   const [fullName, setFullName] = useState('');
@@ -114,7 +124,8 @@ export function LoginPage(): JSX.Element {
     if (idErr !== undefined || pwErr !== undefined) return;
     setLoginBusy(true);
     setLoginServer(null);
-    const res = await loginAs(id, password);
+    setLoggedOut(false);
+    const res = await loginAs(id, password, remember);
     setLoginBusy(false);
     if (!res.ok) setLoginServer(classifyServerError(res.error ?? ''));
   }
@@ -260,6 +271,12 @@ export function LoginPage(): JSX.Element {
             </div>
           )}
 
+          {loggedOut && mode === 'login' && bannerKind === null && regSummary === null && (
+            <div style={{ marginBottom: 12 }}>
+              <Alert tone="success">Đã đăng xuất. Hẹn gặp lại!</Alert>
+            </div>
+          )}
+
           {mode === 'login' ? (
             <>
               <div className="field">
@@ -313,6 +330,18 @@ export function LoginPage(): JSX.Element {
                   <span id="pw-hint" className="field-hint">Mật khẩu phân biệt chữ hoa/thường.</span>
                 )}
               </div>
+              {/* FE-026: Ghi nhớ đăng nhập — default OFF (máy quầy dùng chung).
+                  Tick → `auth:login {remember:true}` + cất token; mở app sau
+                  tự `auth:resume` (xoay token) vào thẳng app. */}
+              <label className="field-hint" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', margin: '0 0 12px' }}>
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  aria-label="Ghi nhớ đăng nhập trên máy này"
+                />
+                Ghi nhớ đăng nhập trên máy này
+              </label>
               <Button type="submit" block disabled={loginBusy} aria-busy={loginBusy}>
                 {loginBusy ? 'Đang đăng nhập…' : 'Đăng nhập'}
               </Button>

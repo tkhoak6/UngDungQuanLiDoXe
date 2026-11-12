@@ -269,3 +269,61 @@
   MissingPluginException.
 - Crop byte vùng overlay (P2) + đo có tăng tỉ lệ đọc biển 2 dòng xa không.
 - Torch auto-suggest chỉ là gợi ý text — chưa tự bật flash.
+
+---
+
+# MO-018 — Mobile ghi nhớ đăng nhập local (nối BE-023 concept)
+
+## Quyết định (chỉ `mobile/`, KHÔNG gọi IPC/API desktop, KHÔNG chạy app)
+
+- Học concept BE-023 (`specs/backend-summary.md` §BE-023 — đọc TRỰC TIẾP):
+  token 32 bytes → base64url 43 ký tự, lưu **hash-only (SHA-256 hex)**,
+  **single-use (xoay vòng mỗi lần dùng)**, hạn **30 ngày**, trần
+  **5 token/user**, **thu hồi khi logout**. TRIỂN KHAI PHIÊN BẢN LOCAL.
+- Khác biệt cố ý vs desktop: token THÔ trong Keystore/Keychain
+  (`flutter_secure_storage`, đã có dep) + hash trong bảng
+  `remember_tokens` của chính DB local (thay vì `sessions.json` cạnh DB
+  desktop). KHÔNG brute-force counter như BE-023: token nằm trong secure
+  storage gắn device-unlock OS — cầm DB mà không có token thô thì không
+  resume được (chỉ có hash).
+- **Checkbox "Ghi nhớ đăng nhập" default ON** (quyết định ghi rõ): mobile
+  là máy cá nhân; token đã bọc secure storage + xoay vòng + thu hồi khi
+  logout. Tắt = phiên chỉ tới khi thoát app (và thu hồi token cũ nếu có).
+- Đăng ký cũng remember luôn (default ON như login, không checkbox riêng).
+
+## File đã tạo/sửa
+
+| File | Thay đổi |
+|---|---|
+| `lib/data/remember_session_store.dart` (mới) | `RememberBackend` (secure/Memory cho test) + `RememberSessionStore`: `generateToken/tokenHash/fingerprint/isExpired` (pure, `crypto` sẵn có), `saveSession` (prune hết hạn + trần 5 → INSERT → ghi 4 key secure), `readStored`, `isTokenKnown`, `clearDevice`/`clearSecureOnly` (thu hồi, best-effort). `checkResume` + `resumeMessage` pure (test được, không sqflite): thứ tự hết hạn → token lạ → user mất → khóa → đổi pass → ok |
+| `lib/db/app_db.dart` | v3 → **v4**: bảng `remember_tokens(token_hash PK, user_id FK CASCADE, expires_at, created_at)` + index; `_create` + `_upgrade` idempotent (`IF NOT EXISTS`) |
+| `lib/repos/auth_repo.dart` | + `userRowById/findById/passwordHashOf` — resume verify FRESH (không tin session cũ, mirror `establishSessionFromUserId` BE-023) |
+| `lib/repos/hybrid_auth_repo.dart` | + `RestoreAttempt` (none/ok/failed) + `persistRememberMe/clearRemembered/restoreRemembered` (verify → xoay single-use → source remote nếu PB còn token, sync không gọi mạng lúc mở app) |
+| `lib/state/providers.dart` | + `resumeNoticeProvider` (message bắt login 1 lần) + `sessionRestoreProvider` (chạy 1 lần lúc mở app) |
+| `lib/state/session_actions.dart` (mới) | `signOut(ref)` tập trung: thu hồi remember + logout PB + null session — mọi nút Đăng xuất PHẢI qua đây |
+| `lib/app.dart` | Splash "Đang mở…" trong lúc verify token (không nháy màn guest trước khi resume xong) |
+| `lib/screens/auth.dart` | Checkbox "Ghi nhớ đăng nhập (30 ngày)" default ON + persist/clear sau login, persist sau register; banner resume fail 1 lần; AdminBlock qua `signOut` |
+| `lib/screens/customer_profile.dart` | Cá nhân/Tôi qua `signOut`; message đổi MK nói rõ "Lần mở app sau vui lòng đăng nhập lại" (fingerprint lệch → resume fail đúng nhánh) |
+| `lib/screens/server_settings.dart` | Đổi URL thu hồi luôn remember (phải login lại); thêm nút Đăng xuất ở card Trạng thái |
+| `lib/screens/map_screen.dart`, `customer_main.dart` (Đặt chỗ), `customer_vehicles.dart` (Xe tôi), `customer_more.dart` (Vé), `staff_ops.dart` (Check-in/Thu phí), `staff_attendance.dart` (Chấm công) | Nút Đăng xuất (IconButton AppBar, thu hồi remember) — mọi màn hình chính đều có; Cá nhân/Tôi giữ nút đầy đủ |
+| `test/remember_me_mo018_test.dart` (mới, 14 tests) | Token/fingerprint/expiry 4 + backend RAM/readStored/clear 3 + `checkResume` 6 nhánh + message Việt 1 |
+
+## Luồng (theo hợp đồng)
+
+- Login ON → `persistRememberMe`; OFF → `clearRemembered`. Mở app →
+  `sessionRestoreProvider` → resume OK (xoay token) hoặc fail → thu hồi +
+  `resumeNoticeProvider` → Login hiện banner 1 lần ("…vui lòng đăng nhập
+  lại", riêng đổi pass: "Bạn đã đổi mật khẩu — vui lòng đăng nhập lại",
+  khóa: "Tài khoản đã bị khóa…"). Đổi máy chủ → thu hồi + login lại.
+
+## Verification (12/11/2026, Flutter 3.47.9, `D:\flutter\bin\flutter.bat`)
+
+- `flutter analyze` → **No issues found!**
+- `flutter test` → **All tests passed!** (115 cũ + 14 mới MO-018 = 129)
+- grep `print(|debugPrint(` trong `lib/` → 0 match thật (3 hit là tên hàm `fingerprint`)
+- KHÔNG chạy app, KHÔNG đụng desktop/Electron (theo contract).
+- Chưa cover trên VM (ghi rõ): `saveSession/isTokenKnown/clearDevice`
+  chạm sqflite + Keystore thật → cần test thiết bị thật: resume sau
+  restart, xoay vòng (token cũ fail), logout thu hồi (mở lại không tự
+  vào), đổi pass → bắt login + message, khóa user → bắt login, đổi máy
+  chủ → bắt login.

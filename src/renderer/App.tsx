@@ -34,7 +34,7 @@ const PAGE_PERM: Record<PageKey, StaffPermissionKey | null> = {
 };
 
 function Root(): JSX.Element {
-  const { role, perms } = useAuth();
+  const { role, perms, ready } = useAuth();
   const [page, setPage] = useState<PageKey>('dashboard');
   const [denied, setDenied] = useState(false);
   const [deniedPerm, setDeniedPerm] = useState<StaffPermissionKey | null>(null);
@@ -111,6 +111,21 @@ function Root(): JSX.Element {
     setDeniedPerm(null);
     return undefined;
   }, [role, page, perms]);
+
+  if (!ready) {
+    // FE-026: đang boot (auth:me/auth:resume) — skeleton thay vì nháy màn
+    // Login khi resume remember-me thành công. Resume fail cũng về login
+    // bình thường, KHÔNG banner đỏ.
+    return (
+      <div className="login-wrap" aria-busy="true" aria-label="Đang tải phiên đăng nhập">
+        <div className="login-form-col">
+          <div className="card" style={{ textAlign: 'center', color: 'var(--color-text-60)' }}>
+            Đang mở phiên làm việc…
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (role === null) return <LoginPage />;
 

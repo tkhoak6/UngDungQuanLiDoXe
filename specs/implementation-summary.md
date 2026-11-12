@@ -240,4 +240,49 @@ không đặt được, sai là báo đỏ. Khó dùng.
 - Chưa chạy: click Toast thật trong Electron (cần preload `on` + DB có data
   mẫu E1–E4) — chờ designer QA tay.
 
+## FE-026 — Ghi nhớ đăng nhập + nút Đăng xuất (nối BE-023)
+
+- `lib/api.ts`: `RendererApi.login(username, password, remember?)` → gửi
+  `auth:login {remember}` + bóc `remember_token` (có khi remember=true) vào
+  `data.rememberToken`; mới `resume(token)` → `auth:resume` (nhận token đã
+  xoay); `logout(token?)` → `auth:logout {token}` (không gửi = flow cũ).
+- `lib/mockApi.ts`: mock đủ 3 IPC — login remember cấp token demo
+  (`mock-remember-<uid>-…`, lưu localStorage cùng key thật để browser-dev
+  reload vẫn resume được); resume single-use + xoay token mới; logout thu hồi
+  (xóa khi token khớp). Token lạ → fail như backend.
+- `store/auth.tsx`: kho token `parking:remember-token-v1` (localStorage —
+  QUYẾT ĐỊNH: renderer Electron không có secure storage riêng; desktop
+  single-operator + token single-use/xoay vòng/thu hồi khi logout nên rủi ro
+  thấp). `loginAs(u, p, remember=false)`: chỉ cất token khi tick remember.
+  Boot: `auth:me` (flow cũ giữ nguyên) → null + có token → `auth:resume`
+  (cất đè token xoay) → vào thẳng app; resume fail → xóa token + form login
+  bình thường (KHÔNG banner đỏ — boot im lặng). Thêm cờ `ready` để App chờ.
+  `logout()`: 1 click KHÔNG confirm (quyết định — đăng nhập lại rẻ, tránh ma
+  sát ở quầy) → thu hồi token server (best-effort) + xóa kho + cờ
+  sessionStorage cho toast "Đã đăng xuất." ở LoginPage. Áp dụng MỌI role
+  (admin/staff/customer/guest-preview).
+- `pages/LoginPage.tsx`: checkbox "Ghi nhớ đăng nhập trên máy này" —
+  QUYẾT ĐỊNH default OFF (máy quầy dùng chung, tránh phiên cũ tự vào app khi
+  đổi ca). Register auto-login gọi `loginAs(phone, pw)` không remember.
+  Flash success "Đã đăng xuất. Hẹn gặp lại!" 1 lần sau logout (khác banner đỏ
+  lỗi đăng nhập — tone success riêng).
+- `layout/AppShell.tsx`: topbar avatar → dropdown (Tên + badge vai trò +
+  Đăng xuất) cho MỌI role (admin trước đây thiếu ở topbar, chỉ có nút
+  sidebar — giữ nguyên nút sidebar, thêm dropdown). Đóng khi click ngoài /
+  Esc (focus trả về avatar), `aria-haspopup/menu`, `role=menu/menuitem`.
+  Customer vẫn dùng nút Đăng xuất sẵn có trong GuestPage header.
+- `App.tsx`: cổng boot `ready` — skeleton "Đang mở phiên làm việc…" thay vì
+  nháy màn Login khi resume thành công.
+- Đổi mật khẩu/SĐT ở Hồ sơ: KHÔNG làm gì thêm (ghi rõ theo contract — BE-023
+  chỉ xoay token theo phiên resume, không có IPC thu hồi các token khác; đợi
+  BE hỗ trợ endpoint revoke-all mới làm FE).
+
+## Verification (FE-026)
+
+- `npx tsc --noEmit` → **pass**. Không `console.log`.
+- `npm run build:renderer` (vite) → **built in 9.14s**, không restart app.
+- Chưa chạy: tắt/mở app thật trong Electron (cần DB + better-sqlite3 native
+  binding) — QA tay: tick remember → login → tắt app → mở lại → vào thẳng;
+  resume fail → login thường không banner đỏ; logout mọi role → token thu hồi.
+
 

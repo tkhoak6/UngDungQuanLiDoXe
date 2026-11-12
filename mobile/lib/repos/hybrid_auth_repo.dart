@@ -3,6 +3,7 @@ import 'dart:developer' as dev;
 
 import '../data/pb_auth_remote.dart';
 import '../data/pb_client.dart';
+import '../data/remember_session_store.dart';
 import '../db/app_db.dart';
 import '../models/entities.dart';
 import 'auth_repo.dart';
@@ -15,6 +16,28 @@ class HybridAuthResult {
 
   final AppUser user;
   final AuthSource source;
+}
+
+/// Kết quả 1 lần resume remember-me lúc mở app (MO-018).
+class RestoreAttempt {
+  const RestoreAttempt._(this.user, this.source, this.reason);
+
+  /// Không có phiên remember nào — mở app như guest, không message.
+  const RestoreAttempt.none() : this._(null, null, null);
+
+  /// Resume OK — dựng session + xoay token xong.
+  const RestoreAttempt.ok(AppUser user, AuthSource source)
+      : this._(user, source, null);
+
+  /// Resume fail — caller xóa session + hiện [resumeMessage(reason)].
+  const RestoreAttempt.failed(ResumeVerdict reason)
+      : this._(null, null, reason);
+
+  final AppUser? user;
+  final AuthSource? source;
+  final ResumeVerdict? reason;
+
+  bool get resumed => user != null;
 }
 
 /// Adapter auth hybrid (MO-003/MO-010): login thử PocketBase trước rớt
@@ -38,11 +61,16 @@ class HybridAuthRepo {
         required String phone,
         required String password,
         required String fullName,
-      })? remoteRegister})
-      : _remoteRegisterOverride = remoteRegister;
+      })? remoteRegister,
+      RememberSessionStore? remember})
+      : _remoteRegisterOverride = remoteRegister,
+        _remember = remember ?? RememberSessionStore(_db);
 
   final AuthRepo _local;
   final AppDb _db;
+
+  /// Kho remember-me local (MO-018, mirror BE-023 — KHÔNG gọi IPC/API).
+  final RememberSessionStore _remember;
 
   /// Loader do providers.dart cung cấp (tránh import vòng state/*).
   /// Trả null khi chưa khởi tạo được client — lúc đó dùng local thuần.
@@ -190,6 +218,94 @@ class HybridAuthRepo {
   Future<void> logoutRemote() async {
     final pb = await _pbLoader();
     await pb?.logout();
+  }
+
+  /// Lưu phiên remember sau login/register (checkbox ON, default ON).
+  /// Best-effort: lỗi (DB/secure storage) không chặn vào app.
+  Future<void> persistRememberMe(int userId) async {
+    try {
+      final hash = await _local.passwordHashOf(userId);
+      if (hash == null) return;
+      await _remember.saveSession(userId: userId, passwordHash: hash);
+    } catch (_) {
+      // Remember là tiện ích — login vẫn thành công khi lưu fail.
+    }
+  }
+
+  /// Thu hồi phiên remember của máy này (logout / tắt checkbox /
+  /// đổi máy chủ). Best-effort — không throw để logout không kẹt.
+  Future<void> clearRemembered() async {
+    try {
+      await _remember.clearDevice();
+    } catch (_) {
+      // Bỏ qua — secure keys có thể đã mất.
+    }
+  }
+
+  /// Tự login lại khi mở app (MO-018): đọc secure storage → verify FRESH
+  /// (còn hạn, token còn trong bảng, user còn, chưa khóa, pass chưa đổi)
+  /// → OK thì XOAY token single-use (như BE-023) rồi trả session.
+  /// Fail → đã thu hồi + caller hiện message rõ, bắt login lại.
+  Future<RestoreAttempt> restoreRemembered() async {
+    final StoredRemember stored;
+    try {
+      final s = await _remember.readStored();
+      if (s == null) return const RestoreAttempt.none();
+      stored = s;
+    } catch (_) {
+      return const RestoreAttempt.none();
+    }
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (RememberSessionStore.isExpired(stored.expiresAtMs, nowMs)) {
+      await clearRemembered();
+      return const RestoreAttempt.failed(ResumeVerdict.expired);
+    }
+    final bool known;
+    try {
+      known = await _remember.isTokenKnown(stored.token);
+    } catch (_) {
+      return const RestoreAttempt.none();
+    }
+    final Map<String, dynamic>? row;
+    try {
+      row = await _local.userRowById(stored.userId);
+    } catch (_) {
+      return const RestoreAttempt.none();
+    }
+    final verdict = checkResume(
+      stored: stored,
+      nowMs: nowMs,
+      tokenKnown: known,
+      userRow: row,
+    );
+    if (verdict != ResumeVerdict.ok || row == null) {
+      await clearRemembered();
+      return RestoreAttempt.failed(verdict);
+    }
+    // OK → xoay vòng single-use: token cũ thu hồi, cấp mới.
+    try {
+      await _remember.saveSession(
+        userId: stored.userId,
+        passwordHash: row['password_hash'] as String? ?? '',
+      );
+    } catch (_) {
+      return const RestoreAttempt.none();
+    }
+    final user = await _local.findById(stored.userId);
+    if (user == null) {
+      await clearRemembered();
+      return const RestoreAttempt.failed(ResumeVerdict.userMissing);
+    }
+    // Nguồn badge: PB còn token hợp lệ (sync, không gọi mạng lúc mở
+    // app) → remote, còn lại local. Best-effort tuyệt đối.
+    var source = AuthSource.local;
+    try {
+      final pb = await _pbLoader().timeout(const Duration(seconds: 3));
+      if (pb != null && pb.hasSession) source = AuthSource.remote;
+    } catch (_) {
+      source = AuthSource.local;
+    }
+    return RestoreAttempt.ok(user, source);
   }
 
   /// Quyết định lỗi cuối khi remote từ chối + local cũng lỗi (pure — có

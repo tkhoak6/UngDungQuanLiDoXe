@@ -8,6 +8,7 @@ import '../core/tokens.dart';
 import '../models/entities.dart';
 import '../repos/customer_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 /// Xe của tôi + Lịch sử — segmented 2 trang trong 1 tab.
@@ -53,8 +54,20 @@ class _VehiclesScreenState extends ConsumerState<VehiclesScreen> {
     }
     final repo = ref.watch(customerRepoProvider);
     return Scaffold(
-      appBar:
-          AppBar(title: const Text('Xe tôi', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Xe tôi', style: AppText.appBar),
+        // MO-018: đăng xuất ngay từ màn chính (thu hồi remember token).
+        actions: [
+          IconButton(
+            tooltip: 'Đăng xuất',
+            onPressed: () {
+              signOut(ref);
+              context.go('/map');
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(

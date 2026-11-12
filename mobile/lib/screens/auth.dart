@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -10,6 +8,7 @@ import '../core/validators.dart';
 import '../repos/auth_repo.dart';
 import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 String _friendly(AuthException e) => friendlyAuthMessage(e);
@@ -26,6 +25,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _pass = TextEditingController();
   bool _obscure = true;
   bool _loading = false;
+
+  /// MO-018 QUYẾT ĐỊNH: default ON — mobile là máy cá nhân, token nằm
+  /// Keystore/Keychain + hash-only trong DB + xoay vòng + thu hồi khi
+  /// logout (mirror BE-023). Tắt = phiên chỉ tồn tại tới khi thoát app.
+  bool _remember = true;
+  bool _noticeShown = false;
   String? _userErr;
   String? _passErr;
   String? _banner;
@@ -48,6 +53,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           .login(_user.text, _pass.text);
       ref.read(authSourceProvider.notifier).state = res.source;
       ref.read(sessionProvider.notifier).state = res.user;
+      // MO-018: ON → lưu remember (mở app sau tự vào); OFF → thu hồi
+      // token cũ của máy (nếu có) để không tự resume lại.
+      if (_remember) {
+        await ref.read(hybridAuthRepoProvider).persistRememberMe(res.user.id);
+      } else {
+        await ref.read(hybridAuthRepoProvider).clearRemembered();
+      }
     } on AuthException catch (e) {
       setState(() => _banner = _friendly(e));
     } finally {
@@ -64,6 +76,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // MO-018: resume fail (hết hạn/đổi pass/khóa) → banner 1 lần ở form
+    // login, rồi xóa để lần sau không hiện lại.
+    if (!_noticeShown) {
+      _noticeShown = true;
+      final notice = ref.read(resumeNoticeProvider);
+      if (notice != null && notice.isNotEmpty) {
+        _banner = notice;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          ref.read(resumeNoticeProvider.notifier).state = null;
+        });
+      }
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Đăng nhập', style: AppText.appBar),
@@ -119,7 +143,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 label: _loading ? 'Đang đăng nhập…' : 'Đăng nhập',
                 loading: _loading,
                 onPressed: _submit),
-            const SizedBox(height: AppGaps.s12),
+            // MO-018: ghi nhớ đăng nhập — default ON (máy cá nhân).
+            CheckboxListTile(
+              value: _remember,
+              onChanged: (v) =>
+                  setState(() => _remember = v ?? true),
+              title: const Text('Ghi nhớ đăng nhập'),
+              subtitle: const Text(
+                  'Tự đăng nhập lại trong 30 ngày trên máy này.'),
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
             SizedBox(
               height: 48,
               child: TextButton(
@@ -191,6 +225,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               );
       ref.read(authSourceProvider.notifier).state = res.source;
       ref.read(sessionProvider.notifier).state = res.user;
+      // MO-018: đăng ký xong cũng remember luôn (default ON như login).
+      await ref.read(hybridAuthRepoProvider).persistRememberMe(res.user.id);
       // MO-010 offline-first: register luôn thành công local → vào app
       // ngay. Banner đỏ chỉ còn cho lỗi local (SĐT trùng trên máy, MK
       // yếu…); server fail thì hiện note vàng, không chặn luồng.
@@ -338,12 +374,7 @@ class AdminBlockScreen extends ConsumerWidget {
             PrimaryButton(
               label: 'Đăng xuất',
               danger: true,
-              onPressed: () {
-                unawaited(
-                    ref.read(hybridAuthRepoProvider).logoutRemote());
-                ref.read(authSourceProvider.notifier).state = null;
-                ref.read(sessionProvider.notifier).state = null;
-              },
+              onPressed: () => signOut(ref),
             ),
           ],
         ),

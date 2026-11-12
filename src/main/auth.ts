@@ -173,6 +173,30 @@ export function logout(): void {
   }
 }
 
+/** Gán trực tiếp session memory (BE-023 resume — user đã verify qua token). */
+export function setCurrentUser(dto: UserDTO | null): void {
+  currentUser = dto;
+}
+
+/**
+ * Remember-me resume (BE-023): dựng lại session memory từ user_id đã verify
+ * qua token file (auth:resume đã consume + xoay vòng trước khi gọi).
+ * Đọc FRESH từ DB + check khóa/guest y hệt login() — KHÔNG tin session cũ.
+ */
+export function establishSessionFromUserId(db: AppDb, userId: number): UserDTO {
+  const row = db
+    .prepare(
+      `SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
+    )
+    .get(userId) as UserRow | undefined;
+  // Message chung như resume (không lộ user còn hay mất).
+  if (!row) throw new AppError('Phiên đăng nhập không hợp lệ hoặc đã hết hạn — vui lòng đăng nhập lại');
+  if (row.is_active !== 1) throw new AppError('Tài khoản bị khóa — liên hệ Admin.');
+  if (row.role_name === 'guest') throw new AppError('Vai trò Khách không cần đăng nhập');
+  currentUser = toUserDTO(row);
+  return currentUser;
+}
+
 /** User-facing error (safe to show in UI). Anything else is treated as internal. */
 export class AppError extends Error {
   constructor(message: string) {

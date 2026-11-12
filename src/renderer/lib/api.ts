@@ -95,7 +95,12 @@ export interface RegisterInput {
 }
 
 export interface RendererApi {
-  login(username: string, password: string): Promise<ApiResult<AuthUser>>;
+  // FE-026 (nối BE-023 remember-me): login thêm `remember?` → server trả
+  // `remember_token` 1 lần duy nhất (kèm trong data). Caller cất kho và
+  // dùng `resume` ở lần mở app sau. Không remember = flow cũ, không đổi.
+  login(username: string, password: string, remember?: boolean): Promise<ApiResult<AuthUser & { rememberToken?: string }>>;
+  // FE-026: mở app → token cũ → session mới + token đã xoay (cất đè token mới).
+  resume(token: string): Promise<ApiResult<AuthUser & { rememberToken: string }>>;
   // FE-012 (BE-007): public customer self-registration. No auto-login —
   // caller must call login(phone, password) after success.
   register(input: RegisterInput): Promise<ApiResult<{ userId: number; fullName: string }>>;
@@ -115,7 +120,9 @@ export interface RendererApi {
   revenue(from: string, to: string): Promise<ApiResult<{ daily: import('../types').RevenueDaily[]; sessions: import('../types').SessionsDaily[] }>>;
   dashboard(): Promise<ApiResult<DashboardSummary>>;
   previewFee(ticketCode: string, discountAmount?: number): Promise<ApiResult<FeePreview>>;
-  logout(): Promise<ApiResult<void>>;
+  // FE-026: logout kèm token remember-me đang giữ để main thu hồi
+  // (không gửi = chỉ xóa session memory như cũ). Fire-and-forget ở store.
+  logout(token?: string): Promise<ApiResult<void>>;
   currentUser(): Promise<ApiResult<AuthUser | null>>;
   listUsers(): Promise<ApiResult<UserDTO[]>>;
   createUser(input: { username: string; password: string; full_name: string; role: 'admin' | 'staff' }): Promise<ApiResult<UserDTO>>;
@@ -315,11 +322,34 @@ function toResult<T>(res: { success: boolean; data?: T; message?: string; errors
 
 /** Backend-first implementation over the preload invoke bridge. */
 const backendApi: RendererApi = {
-  async login(username, password) {
-    const res = await (getBridge() as InvokeBridge).invoke('auth:login', { username, password });
+  async login(username, password, remember = false) {
+    const res = await (getBridge() as InvokeBridge).invoke('auth:login', { username, password, remember });
     if (!res.success || !res.data) return { ok: false, error: friendlyPermError(res.message ?? 'Sai tài khoản hoặc mật khẩu') };
     if (res.data.role_name === 'guest') return { ok: false, error: 'Tài khoản không có quyền đăng nhập' };
-    return { ok: true, data: { userId: res.data.id, fullName: res.data.full_name, role: res.data.role_name, perms: res.data.perms ?? { ...STAFF_DEFAULTS } } };
+    return {
+      ok: true,
+      data: {
+        userId: res.data.id, fullName: res.data.full_name, role: res.data.role_name,
+        perms: res.data.perms ?? { ...STAFF_DEFAULTS },
+        ...(res.data.remember_token ? { rememberToken: res.data.remember_token } : {}),
+      },
+    };
+  },
+
+  // FE-026: token cũ (single-use) → session mới + token đã xoay. Sai/hết hạn
+  // → fail, caller xóa token + về màn login (KHÔNG banner đỏ — boot im lặng).
+  async resume(token) {
+    const res = await (getBridge() as InvokeBridge).invoke('auth:resume', { token });
+    if (!res.success || !res.data) return { ok: false, error: res.message ?? 'Phiên đăng nhập đã hết hạn' };
+    if (res.data.role_name === 'guest') return { ok: false, error: 'Tài khoản không có quyền đăng nhập' };
+    return {
+      ok: true,
+      data: {
+        userId: res.data.id, fullName: res.data.full_name, role: res.data.role_name,
+        perms: res.data.perms ?? { ...STAFF_DEFAULTS },
+        rememberToken: res.data.remember_token,
+      },
+    };
   },
 
   // FE-012 (BE-007 `auth:register`, public). Caller auto-logins via login().
@@ -481,9 +511,10 @@ const backendApi: RendererApi = {
     return toResult(res);
   },
 
-  async logout() {
+  async logout(token?: string) {
     try {
-      await (getBridge() as InvokeBridge).invoke('auth:logout', undefined);
+      // FE-026: kèm token remember-me để main thu hồi (best-effort).
+      await (getBridge() as InvokeBridge).invoke('auth:logout', token ? { token } : undefined);
     } catch {
       // fire-and-forget — renderer state is cleared regardless
     }

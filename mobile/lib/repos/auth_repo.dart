@@ -109,6 +109,30 @@ class AuthRepo {
     return _toUser(row);
   }
 
+  /// Row user thô theo id — resume remember-me verify FRESH (tồn tại /
+  /// khóa / đổi pass), không tin session cũ (mirror BE-023
+  /// `establishSessionFromUserId`). Null khi user đã bị xóa.
+  Future<Map<String, dynamic>?> userRowById(int id) async {
+    final d = await _db.db;
+    final rows =
+        await d.query('users', where: 'id = ?', whereArgs: [id], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// Entity đầy đủ theo id — null khi user đã bị xóa.
+  Future<AppUser?> findById(int id) async {
+    final row = await userRowById(id);
+    if (row == null) return null;
+    return _toUser(row);
+  }
+
+  /// Hash hiện tại — fingerprint remember-me, KHÔNG trả password thô
+  /// (scheme local V1 vẫn là `demo:<pw>`, không lộ ra UI).
+  Future<String?> passwordHashOf(int id) async {
+    final row = await userRowById(id);
+    return row?['password_hash'] as String?;
+  }
+
   Future<AppUser> updateProfileName(int userId, String fullName) async {
     final err = Validators.fullName(fullName);
     if (err != null) throw AuthException('INVALID_NAME', err);

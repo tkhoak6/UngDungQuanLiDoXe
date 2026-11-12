@@ -353,6 +353,8 @@ class _ParkingAppState extends ConsumerState<ParkingApp> {
   @override
   Widget build(BuildContext context) {
     final router = ref.watch(routerProvider);
+    // MO-018: kích hoạt resume remember-me 1 lần lúc mở app.
+    final restore = ref.watch(sessionRestoreProvider);
     ref.listen<AppUser?>(sessionProvider, (_, next) {
       _maybeLaunchSweep(next);
       if (initialNotifLink != null) _consumeInitial();
@@ -361,6 +363,26 @@ class _ParkingAppState extends ConsumerState<ParkingApp> {
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
     );
+    // MO-018: đang verify remember token → splash, chưa dựng router để
+    // không nháy màn guest trước khi session resume xong.
+    if (restore.isLoading) {
+      return MaterialApp(
+        title: 'Bãi Xe Thông Minh',
+        theme: base,
+        home: const Scaffold(
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Đang mở…'),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return MaterialApp.router(
       title: 'Bãi Xe Thông Minh',
       theme: base.copyWith(

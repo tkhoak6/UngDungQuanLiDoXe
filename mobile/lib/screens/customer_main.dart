@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/anpr.dart';
 import '../core/format.dart';
@@ -14,6 +15,7 @@ import '../models/entities.dart';
 import '../notifications/notifications.dart';
 import '../repos/parking_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/plate_field.dart';
 import '../widgets/ui.dart';
 import 'anpr_sheet.dart';
@@ -336,8 +338,20 @@ class _ReservationsScreenState extends ConsumerState<ReservationsScreen> {
     final phone = me.phone ?? me.username;
 
     return Scaffold(
-      appBar:
-          AppBar(title: const Text('Đặt chỗ', style: AppText.appBar)),
+      appBar: AppBar(
+        title: const Text('Đặt chỗ', style: AppText.appBar),
+        // MO-018: đăng xuất ngay từ màn chính (thu hồi remember token).
+        actions: [
+          IconButton(
+            tooltip: 'Đăng xuất',
+            onPressed: () {
+              signOut(ref);
+              context.go('/map');
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
       body: FutureBuilder<List<ReservationRow>>(
         // MO-013: future giữ qua rebuild — gõ biển số (setState mỗi ký tự)
         // không tạo future mới, không rớt về waiting, không mất focus.

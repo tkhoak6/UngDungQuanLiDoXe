@@ -700,11 +700,29 @@ export interface QrVerifyOutput {
   fee_preview?: FeePreview | null; // valid + parked → kèm preview phí lúc quét
 }
 
+// ---- Phiên bền vững remember-me (BE-023) ----
+// Login thêm `remember?`: true → kèm `remember_token` (raw, trả 1 lần duy
+// nhất) để renderer cất secure storage; restart app gọi `auth:resume`.
+// `LoginOutput` là UserDTO + field optional → tương thích ngược frontend cũ.
+export interface LoginInput {
+  username: string;
+  password: string;
+  remember?: boolean;
+}
+export type LoginOutput = UserDTO & { remember_token?: string };
+export interface ResumeInput {
+  token: string;
+}
+export type ResumeOutput = UserDTO & { remember_token: string };
+// Logout nhận optional token remember-me để thu hồi (không gửi = chỉ xóa memory).
+export type LogoutInput = { token?: string } | void;
+
 /** Channel -> { input, output } map. Preload + renderer use this for typing. */
 export interface ApiMap {
-  'auth:login': { input: { username: string; password: string }; output: IpcResult<UserDTO> };
+  'auth:login': { input: LoginInput; output: IpcResult<LoginOutput> };
   'auth:register': { input: CustomerRegisterInput; output: IpcResult<UserDTO> };
-  'auth:logout': { input: void; output: IpcResult<null> };
+  'auth:resume': { input: ResumeInput; output: IpcResult<ResumeOutput> };
+  'auth:logout': { input: LogoutInput; output: IpcResult<null> };
   'auth:me': { input: void; output: IpcResult<UserDTO | null> };
   'zones:list': { input: void; output: IpcResult<ParkingZone[]> };
   'zones:get': { input: { id: number }; output: IpcResult<ParkingZone> };

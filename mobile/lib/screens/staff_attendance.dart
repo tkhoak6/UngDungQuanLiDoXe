@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/tokens.dart';
 import '../core/retained_future.dart';
@@ -7,6 +8,7 @@ import '../models/entities.dart';
 import '../notifications/notifications.dart';
 import '../repos/staff_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 /// Chấm công: card ca hiện tại + Vào/Ra + lịch sử 7 ngày + banner quên chốt.
@@ -66,8 +68,19 @@ class _AttendanceScreenState
 
     return Scaffold(
       appBar: AppBar(
-          title:
-              const Text('Chấm công', style: AppText.appBar)),
+        title: const Text('Chấm công', style: AppText.appBar),
+        // MO-018: đăng xuất ngay từ màn chính (thu hồi remember token).
+        actions: [
+          IconButton(
+            tooltip: 'Đăng xuất',
+            onPressed: () {
+              signOut(ref);
+              context.go('/map');
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(AppGaps.s16),
         children: [

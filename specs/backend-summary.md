@@ -844,3 +844,57 @@ DB packaged app nằm ở `<userData>/parking.db`.
   Toast trước 20p; login staff lấp đầy 1 zone → Toast 1 lần; vào ca test + chờ
   end+30p (hoặc `notify:test {sample:'E4'}`) → Toast click mở đúng tab.
 - **Status: partially_verified** (logic + types + unit pass; runtime GUI chờ QA tay).
+
+## BE-023 — Phiên đăng nhập bền vững remember-me (session token lưu file)
+
+- QUYẾT ĐỊNH LƯU TRỮ: **file JSON `sessions.json` cạnh DB** (cùng thư mục
+  `parking.db`, pattern atomic tmp+rename + mode 0o600 như app-config) —
+  KHÔNG thêm bảng, KHÔNG migration, KHÔNG đụng `schema.sql`/renderer.
+  Lý do: desktop single-operator, token chỉ cần lookup theo hash + expiry
+  (không JOIN/query phức tạp), revoke = xóa dòng file. Mobile dùng sau qua
+  đúng contract này.
+- `src/main/session-store.ts` (mới): `issueRememberToken` (32 bytes CSPRNG →
+  base64url 43 ký tự, lưu **SHA-256 hex** + `user_id` + hạn **30 ngày**,
+  trần 5 token/user, prune hết hạn mỗi lần ghi), `consumeRememberToken`
+  (single-use: đúng + còn hạn → XÓA ngay để caller xoay vòng; sai/hết hạn →
+  cùng `{ok:false}`, hết hạn thì dọn dòng — không phân biệt lý do để chống
+  oracle; so sánh `timingSafeEqual`), `revokeRememberToken` (logout),
+  `loadRememberSessions` (file mất → `[]`; file hỏng → quarantine
+  `.corrupt-<ts>` + `[]`, không throw). Brute-force guard in-memory:
+  sai 5 lần → khóa `auth:resume` 60s + delay 300ms mỗi lần sai + message chung.
+- `src/main/auth.ts`: `setCurrentUser` + `establishSessionFromUserId(db, id)`
+  (đọc FRESH + check khóa/guest y hệt `login()` — không tin session cũ).
+  `login()`/`logout()`/`loginOnlineFirst()` hiện tại giữ nguyên chữ ký.
+- `src/shared/types.ts`: `LoginInput {username, password, remember?}`,
+  `LoginOutput = UserDTO & {remember_token?}` (tương thích ngược — frontend cũ
+  đọc `data` như UserDTO vẫn đúng), `ResumeInput/Output`
+  (`remember_token` bắt buộc ở output = token đã xoay), `LogoutInput =
+  {token?} | void`. `ApiMap`: `auth:login` input/output mới, IPC mới
+  `auth:resume`, `auth:logout` nhận optional token để thu hồi.
+- `src/main/ipc-handlers.ts`: `auth:login` — `remember: true` → cấp token,
+  trả raw **1 lần duy nhất** trong `remember_token` (+ message "30 ngày");
+  `auth:resume {token}` (public + guard block/delay) → consume + dựng session
+  + **xoay token mới** (cũ thu hồi ngay) + `resetResumeFailures`;
+  `auth:logout {token?}` → revoke token đó (best-effort, không throw) + xóa
+  memory như cũ. Login/register/me hiện tại KHÔNG đổi hành vi khi không gửi
+  `remember`.
+- GHI CHÚ cho @frontend: login checkbox "Ghi nhớ" → gửi `remember: true`,
+  cất `remember_token` vào secure storage (KHÔNG localStorage thô); mở app →
+  `auth:me` null thì gọi `auth:resume {token}` → thay token mới vào kho,
+  fail → xóa token + hiện form login; logout → gửi kèm token đang giữ.
+  Mobile sau này dùng đúng 3 kênh này.
+
+### Verification (BE-023)
+
+- `npx tsc --noEmit` → **pass**.
+- `npx vitest run --config vitest.backend.config.ts` → **40/40 pass**
+  (session-store 8 mới: hash-only file, single-use, token lạ, hết hạn tự dọn,
+  revoke, trần 5/user, guard 5 fails → block 60s, file hỏng quarantine;
+  fee 10 + qr 6 + notifications 16 cũ giữ nguyên).
+- Smoke runtime Electron node (`ELECTRON_RUN_AS_NODE`, DB tạm + auth thật):
+  login remember → clear memory (giả restart) → resume OK + xoay vòng
+  (cũ fail, mới ok) → revoke (giả logout) → resume fail → khóa tài khoản →
+  establish chặn "Tài khoản bị khóa" → **pass** (script ngoài repo, đã xóa).
+- Không `console.log`; không đổi envelope; không lộ password/token trong file.
+- **Status: verified** (logic + types + unit + IPC-level flow đều chạy thật
+  với DB/auth thật; chỉ chưa test GUI click-through).

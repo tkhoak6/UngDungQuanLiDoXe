@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/pb_client.dart';
 import '../data/qr_key_store.dart';
+import '../data/remember_session_store.dart';
 import '../db/app_db.dart';
 import '../models/entities.dart';
 import '../repos/auth_repo.dart';
@@ -18,6 +19,29 @@ final sessionProvider = StateProvider<AppUser?>((ref) => null);
 
 /// Nguồn phiên hiện tại: online (PocketBase) hay local ngoại tuyến.
 final authSourceProvider = StateProvider<AuthSource?>((ref) => null);
+
+/// Message "bắt login lại" sau resume fail (hết hạn/đổi pass/khóa) —
+/// LoginScreen hiện 1 lần rồi xóa. Null = mở app bình thường.
+final resumeNoticeProvider = StateProvider<String?>((ref) => null);
+
+/// Tự login lại 1 lần lúc mở app (MO-018). True = đã resume session.
+/// Chạy 1 lần duy nhất (FutureProvider cache) — ParkingApp hiện splash
+/// trong lúc chờ, xong mới dựng router.
+final sessionRestoreProvider = FutureProvider<bool>((ref) async {
+  final hybrid = ref.read(hybridAuthRepoProvider);
+  final attempt = await hybrid.restoreRemembered();
+  if (!attempt.resumed) {
+    final reason = attempt.reason;
+    if (reason != null) {
+      ref.read(resumeNoticeProvider.notifier).state =
+          resumeMessage(reason);
+    }
+    return false;
+  }
+  ref.read(authSourceProvider.notifier).state = attempt.source;
+  ref.read(sessionProvider.notifier).state = attempt.user;
+  return true;
+});
 
 /// PocketBase client — khởi tạo 1 lần (đọc URL + phiên đã lưu).
 final pbClientProvider = FutureProvider<PbClient>((ref) async {

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,6 +11,7 @@ import '../notifications/notifications.dart';
 import '../repos/auth_repo.dart';
 import '../repos/hybrid_auth_repo.dart';
 import '../state/providers.dart';
+import '../state/session_actions.dart';
 import '../widgets/ui.dart';
 
 /// Cá nhân (P1 một cột): SĐT read-only + họ tên + đổi MK + đăng xuất.
@@ -165,10 +164,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             label: 'Đăng xuất',
             danger: true,
             onPressed: () {
-              unawaited(
-                  ref.read(hybridAuthRepoProvider).logoutRemote());
-              ref.read(authSourceProvider.notifier).state = null;
-              ref.read(sessionProvider.notifier).state = null;
+              signOut(ref);
               context.go('/map');
             },
           ),
@@ -216,7 +212,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             current: _cur.text,
             fresh: _fresh.text,
           );
-      setState(() => _msg = 'Đổi mật khẩu thành công.');
+      // MO-018: fingerprint remember token giờ đã lệch → lần mở app sau
+      // resume fail với message "đã đổi mật khẩu", bắt login lại.
+      setState(() => _msg = 'Đổi mật khẩu thành công. '
+          'Lần mở app sau vui lòng đăng nhập lại.');
     } on AuthException catch (e) {
       setState(() => _msg = e.message);
     }
@@ -463,10 +462,7 @@ class _StaffMeScreenState extends ConsumerState<StaffMeScreen> {
             label: 'Đăng xuất',
             danger: true,
             onPressed: () {
-              unawaited(
-                  ref.read(hybridAuthRepoProvider).logoutRemote());
-              ref.read(authSourceProvider.notifier).state = null;
-              ref.read(sessionProvider.notifier).state = null;
+              signOut(ref);
               context.go('/map');
             },
           ),

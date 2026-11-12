@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   ChartColumn,
@@ -68,6 +69,33 @@ interface Props {
 
 export function AppShell({ page, onNavigate, children }: Props): JSX.Element {
   const { fullName, role, perms, logout } = useAuth();
+  // FE-026: dropdown avatar ở topbar cho MỌI role (admin trước đây chỉ có nút
+  // ở sidebar). 1 click Đăng xuất, KHÔNG confirm — toast "Đã đăng xuất" hiện
+  // ở màn Login (cờ sessionStorage trong store).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const avatarRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setMenuOpen(false);
+        avatarRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
+  const roleLabel = role === 'admin' ? 'Admin' : role === 'staff' ? 'Nhân viên' : role === 'customer' ? 'Khách hàng' : 'Khách';
   // FE-020 S4: staff mất flag → mất menu tương ứng. perms null (đang tải/boot)
   // → hiển thị như full để tránh nhấp nháy ẩn menu.
   const items = NAV.filter((n) => {
@@ -115,7 +143,48 @@ export function AppShell({ page, onNavigate, children }: Props): JSX.Element {
             <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-60)' }}>
               Ca sáng · 07:00–15:00
             </span>
-            <CircleUserRound size={16} strokeWidth={2} aria-hidden="true" style={{ color: 'var(--color-text-60)' }} />
+            {/* FE-026: avatar dropdown (Tên + vai trò + Đăng xuất) cho MỌI role. */}
+            <div ref={menuRef} style={{ position: 'relative' }}>
+              <button
+                ref={avatarRef}
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label={`Tài khoản ${fullName} — mở menu`}
+                onClick={() => setMenuOpen((v) => !v)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              >
+                <CircleUserRound size={16} strokeWidth={2} aria-hidden="true" style={{ color: 'var(--color-text-60)' }} />
+                <span style={{ fontSize: 13, fontWeight: 500, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {fullName}
+                </span>
+              </button>
+              {menuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Menu tài khoản"
+                  className="card"
+                  style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: 220, padding: 12, zIndex: 50 }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullName}</div>
+                  <div style={{ margin: '6px 0 12px' }}>
+                    <span className="badge badge-primary">
+                      <span className="dot" aria-hidden="true" />
+                      {roleLabel}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="btn btn-neutral btn-sm btn-block"
+                    onClick={() => { setMenuOpen(false); logout(); }}
+                  >
+                    Đăng xuất
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <main className="content">{children}</main>
